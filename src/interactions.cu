@@ -6,7 +6,7 @@
 
 __host__ __device__ glm::vec3 calculateRandomDirectionInHemisphere(
     glm::vec3 normal,
-    thrust::default_random_engine &rng)
+    thrust::default_random_engine& rng)
 {
     thrust::uniform_real_distribution<float> u01(0, 1);
 
@@ -44,14 +44,93 @@ __host__ __device__ glm::vec3 calculateRandomDirectionInHemisphere(
         + sin(around) * over * perpendicularDirection2;
 }
 
+__host__ __device__ float schlickFresnel(float cosTheta, float etaI, float etaT) {
+    float r0 = (etaI - etaT) / (etaI + etaT);
+    r0 = r0 * r0;
+    float x = 1.0f - cosTheta;
+    return r0 + (1.0f - r0) * powf(x, 5.0f);
+}
+
 __host__ __device__ void scatterRay(
-    PathSegment & pathSegment,
+    PathSegment& pathSegment,
     glm::vec3 intersect,
     glm::vec3 normal,
-    const Material &m,
-    thrust::default_random_engine &rng)
+    const Material& m,
+    thrust::default_random_engine& rng)
 {
-    // TODO: implement this.
-    // A basic implementation of pure-diffuse shading will just call the
-    // calculateRandomDirectionInHemisphere defined above.
+    glm::vec3 I = glm::normalize(pathSegment.ray.direction);
+    glm::vec3 newDir;
+
+    // Emissive: terminate path
+    if (m.emittance > 0.0f) {
+        pathSegment.color *= m.color * m.emittance;
+        pathSegment.remainingBounces = 0;
+        return;
+    }
+
+    // Reflective
+    if (m.hasReflective > 0.0f) {
+        newDir = glm::reflect(I, normal);
+        pathSegment.ray.origin = intersect + 1e-4f * normal;
+        pathSegment.ray.direction = glm::normalize(newDir);
+        pathSegment.color *= m.color;
+        pathSegment.remainingBounces--;
+        return;
+    }
+
+    if (m.hasRefractive > 0.0f) {
+        float etaI = 1.0f, etaT = m.indexOfRefraction;
+        glm::vec3 n = normal;
+
+        bool entering = glm::dot(I, normal) < 0.0f;
+        if (!entering) {
+            n = -normal;
+            etaI = m.indexOfRefraction;
+            etaT = 1.0f;
+        }
+
+        float cosi = glm::clamp(glm::dot(-I, n), -1.0f, 1.0f);
+        float eta = etaI / etaT;
+
+        // Fresnel reflectance
+        float F = schlickFresnel(fabsf(cosi), etaI, etaT);
+
+        thrust::uniform_real_distribution<float> u01(0.0f, 1.0f);
+        float toss = u01(rng);
+
+        float k = 1.0f - eta * eta * (1.0f - cosi * cosi);
+        if (k < 0.0f || toss < F) {
+            newDir = glm::reflect(I, n);
+        }
+        else {
+            newDir = eta * I + (eta * cosi - sqrtf(k)) * n;
+
+            if (!entering) {
+                float dist = intersect.t;  // distance traveled in medium
+                glm::vec3 absorb = glm::exp(-m.color * dist);
+                pathSegment.color *= absorb;
+            }
+        }
+
+        // Offset origin along the chosen ray direction (safer for refraction)
+        float bias = 1e-4f;
+        pathSegment.ray.origin = intersect + bias * newDir;
+        pathSegment.ray.direction = glm::normalize(newDir);
+        pathSegment.remainingBounces--;
+        return;
+    }
+
+
+
+
+    // Diffuse
+    newDir = calculateRandomDirectionInHemisphere(normal, rng);
+    pathSegment.ray.origin = intersect + 1e-4f * normal;
+    pathSegment.ray.direction = glm::normalize(newDir);
+    pathSegment.color *= m.color;
+    pathSegment.remainingBounces--;
 }
+
+
+
+
