@@ -24,7 +24,7 @@
         },
         "GlassMaterial": {
             "TYPE": "Specular",
-            "RGB": [ 0.02, 0.02, 0.02 ], 
+            "RGB": [ 1.0, 1.0, 1.0 ], 
             "HAS_REFRACTIVE": 1,
             "IOR": 1.5
         }

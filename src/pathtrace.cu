@@ -7,7 +7,7 @@
 #include <thrust/random.h>
 #include <thrust/remove.h>
 #include <thrust/partition.h>
-#include <thrust/sort.h>
+//#include <thrust/sort.h> // keep around if you want to re-enable material sorting
 
 #include "sceneStructs.h"
 #include "scene.h"
@@ -20,9 +20,9 @@
 #define ERRORCHECK 1
 #define samplesPerPixel 16
 
-// Optimization Toggles
+// toggles
+#define SORT_MATERIAL_ID 0
 #define STREAM_COMPACTION 0
-#define MATERIAL_SORTING 0
 
 #define FILENAME (strrchr(__FILE__, '/') ? strrchr(__FILE__, '/') + 1 : __FILE__)
 #define checkCUDAError(msg) checkCUDAErrorFn(msg, FILENAME, __LINE__)
@@ -96,13 +96,12 @@ struct isRayAlive {
     }
 };
 
-// Comparator for sorting intersections by materialId
-struct materialsCmp {
-    __host__ __device__
-        bool operator()(const ShadeableIntersection& a, const ShadeableIntersection& b) const {
-        return a.materialId < b.materialId;
-    }
-};
+ struct materialsCmp {
+     __host__ __device__
+     bool operator()(const ShadeableIntersection& a, const ShadeableIntersection& b) const {
+         return a.materialId < b.materialId;
+     }
+ };
 
 void InitDataContainer(GuiDataContainer* imGuiData)
 {
@@ -119,7 +118,7 @@ void pathtraceInit(Scene* scene)
     cudaMalloc(&dev_image, pixelcount * sizeof(glm::vec3));
     cudaMemset(dev_image, 0, pixelcount * sizeof(glm::vec3));
 
-    // We only use the first pixelcount slots, but extra capacity is fine.
+    // You allocate more space than needed; that's fine. We only use first pixelcount slots.
     cudaMalloc(&dev_paths, pixelcount * samplesPerPixel * sizeof(PathSegment));
 
     cudaMalloc(&dev_geoms, scene->geoms.size() * sizeof(Geom));
@@ -251,6 +250,7 @@ __global__ void computeIntersections(
     }
 }
 
+// Simple shader that advances / terminates rays (your BSDF logic lives in scatterRay)
 __global__ void shadeMaterial(
     int iter,
     int num_paths,
@@ -303,6 +303,7 @@ void pathtrace(uchar4* pbo, int frame, int iter)
         (cam.resolution.x + blockSize2d.x - 1) / blockSize2d.x,
         (cam.resolution.y + blockSize2d.y - 1) / blockSize2d.y);
 
+    // 1D for path processing
     const int blockSize1d = 128;
 
     // Generate primary rays
@@ -310,34 +311,17 @@ void pathtrace(uchar4* pbo, int frame, int iter)
     checkCUDAError("generate camera ray");
 
     int depth = 0;
-    PathSegment* dev_path_end = dev_paths + pixelcount; 
-    int num_paths = (int)(dev_path_end - dev_paths);    
+    PathSegment* dev_path_end = dev_paths + pixelcount; // baseline "full set"
+    int num_paths = dev_path_end - dev_paths;           // starts as pixelcount
 
     bool iterationComplete = false;
     int bounces = 0;
-    bool firstBounce = true;
-
     while (!iterationComplete)
     {
-        // Do stream compaction before material sorting to decrease overhead of material sorting
-#if STREAM_COMPACTION
-        if (!firstBounce) {
-            num_paths = thrust::partition(
-                thrust::device,
-                dev_paths,
-                dev_paths + num_paths,
-                isRayAlive()) - dev_paths;
-        }
-#endif
-
-        if (num_paths <= 0) {
-            iterationComplete = true;
-            break;
-        }
-
+        // We only need intersections for currently-alive paths
         cudaMemset(dev_intersections, 0, pixelcount * sizeof(ShadeableIntersection));
-        dim3 numblocksPathSegmentTracing = (num_paths + blockSize1d - 1) / blockSize1d;
 
+        dim3 numblocksPathSegmentTracing = (num_paths + blockSize1d - 1) / blockSize1d;
         computeIntersections << <numblocksPathSegmentTracing, blockSize1d >> > (
             depth,
             num_paths,
@@ -348,17 +332,17 @@ void pathtrace(uchar4* pbo, int frame, int iter)
             );
         checkCUDAError("trace one bounce");
         cudaDeviceSynchronize();
+        depth++;
 
-        // Sort rays by material 
-#if MATERIAL_SORTING
-        thrust::sort_by_key(
-            thrust::device,
-            dev_intersections,
-            dev_intersections + num_paths,
-            dev_paths,
-            materialsCmp());
-#endif
+        // (Optional) material sorting would go here, before shading
+         #if SORT_MATERIAL_ID
+         thrust::sort_by_key(thrust::device,
+             dev_intersections, dev_intersections + num_paths,
+             dev_paths,
+             materialsCmp());
+         #endif
 
+        // Shade alive paths
         shadeMaterial << <numblocksPathSegmentTracing, blockSize1d >> > (
             iter,
             num_paths,
@@ -369,29 +353,40 @@ void pathtrace(uchar4* pbo, int frame, int iter)
             );
         checkCUDAError("shade");
 
-        depth++;
-        bounces++;
-        firstBounce = false;
+#if STREAM_COMPACTION
+        // Compact to keep only alive rays for the NEXT bounce
+        num_paths = thrust::partition(
+            thrust::device,
+            dev_paths,
+            dev_paths + num_paths,
+            isRayAlive()) - dev_paths;
+#endif
 
-        if (depth >= traceDepth) {
+        // Stop if no more bounces or no more rays
+        if (depth >= traceDepth || num_paths == 0) {
             iterationComplete = true;
         }
+        bounces++;
 
         if (guiData != NULL) {
             guiData->TracedDepth = depth;
         }
     }
 
+    // IMPORTANT: gather over the FULL set (pixelcount), not the compacted set.
+    // Otherwise if all rays terminated, you'd add nothing to the image.
 #if STREAM_COMPACTION
-    num_paths = (int)(dev_path_end - dev_paths); 
+    num_paths = (int)(dev_path_end - dev_paths); // restore to pixelcount
 #endif
 
     dim3 numBlocksPixels = (num_paths + blockSize1d - 1) / blockSize1d;
     finalGather << <numBlocksPixels, blockSize1d >> > (num_paths, dev_image, dev_paths);
     checkCUDAError("finalGather");
 
+    // Send results to OpenGL buffer for rendering
     sendImageToPBO << <blocksPerGrid2d, blockSize2d >> > (pbo, cam.resolution, iter, dev_image);
 
+    // Retrieve image from GPU
     cudaMemcpy(hst_scene->state.image.data(), dev_image,
         pixelcount * sizeof(glm::vec3), cudaMemcpyDeviceToHost);
 

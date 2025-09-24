@@ -79,46 +79,50 @@ __host__ __device__ void scatterRay(
     }
 
     if (m.hasRefractive > 0.0f) {
-        float etaI = 1.0f, etaT = m.indexOfRefraction;
-        glm::vec3 n = normal;
-
+        // Determine enter/exit and set outward normal and indices
         bool entering = glm::dot(I, normal) < 0.0f;
-        if (!entering) {
-            n = -normal;
-            etaI = m.indexOfRefraction;
-            etaT = 1.0f;
-        }
+        glm::vec3 n = entering ? normal : -normal;
 
-        float cosi = glm::clamp(glm::dot(-I, n), -1.0f, 1.0f);
+        float etaI = entering ? 1.0f : m.indexOfRefraction;
+        float etaT = entering ? m.indexOfRefraction : 1.0f;
         float eta = etaI / etaT;
 
-        // Fresnel reflectance
-        float F = schlickFresnel(fabsf(cosi), etaI, etaT);
+        // Fresnel
+        float cosi = glm::clamp(glm::dot(-I, n), 0.0f, 1.0f);
+        float F = schlickFresnel(cosi, etaI, etaT);
 
-        thrust::uniform_real_distribution<float> u01(0.0f, 1.0f);
-        float toss = u01(rng);
+        // Candidate directions
+        glm::vec3 dirR = glm::reflect(I, n);
+        glm::vec3 dirT = glm::refract(I, n, eta);
 
-        float k = 1.0f - eta * eta * (1.0f - cosi * cosi);
-        if (k < 0.0f || toss < F) {
-            newDir = glm::reflect(I, n);
-        }
-        else {
-            newDir = eta * I + (eta * cosi - sqrtf(k)) * n;
-
-            if (!entering) {
-                float dist = intersect.t;  // distance traveled in medium
-                glm::vec3 absorb = glm::exp(-m.color * dist);
-                pathSegment.color *= absorb;
-            }
+        // TIR if refract failed (length^2 ~ 0)
+        bool doReflect = (glm::length(dirT)*glm::length(dirT) < 1e-12f);
+        if (!doReflect) {
+            thrust::uniform_real_distribution<float> u01(0.0f, 1.0f);
+            doReflect = (u01(rng) < F);
         }
 
-        // Offset origin along the chosen ray direction (safer for refraction)
-        float bias = 1e-4f;
-        pathSegment.ray.origin = intersect + bias * newDir;
-        pathSegment.ray.direction = glm::normalize(newDir);
+        glm::vec3 outDir = doReflect ? dirR : dirT;
+
+        // Beer–Lambert absorption on transmission only (distance since last bounce)
+        if (!doReflect) {
+            float dist = glm::length(intersect - pathSegment.ray.origin);
+
+            // If m.color encodes per-unit transmittance T, convert to sigma_a = -log(T)
+            glm::vec3 T = glm::clamp(m.color, glm::vec3(1e-6f), glm::vec3(0.999f));
+            glm::vec3 sigmaA = -glm::log(T); // or use m.sigma_a if you have it
+            pathSegment.color *= glm::exp(-sigmaA * dist);
+        }
+
+        // Offset along the chosen direction
+        const float bias = 1e-3f;
+        pathSegment.ray.direction = glm::normalize(outDir);
+        pathSegment.ray.origin = intersect + bias * pathSegment.ray.direction;
+
         pathSegment.remainingBounces--;
         return;
     }
+
 
     // Diffuse
     newDir = calculateRandomDirectionInHemisphere(normal, rng);
