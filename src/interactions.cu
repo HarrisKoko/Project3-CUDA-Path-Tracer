@@ -120,9 +120,6 @@ __host__ __device__ void scatterRay(
         return;
     }
 
-
-
-
     // Diffuse
     newDir = calculateRandomDirectionInHemisphere(normal, rng);
     pathSegment.ray.origin = intersect + 1e-4f * normal;
