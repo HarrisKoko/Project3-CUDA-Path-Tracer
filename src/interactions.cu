@@ -81,7 +81,7 @@ __host__ __device__ void scatterRay(
     if (m.hasRefractive > 0.0f) {
         // Determine enter/exit and set outward normal and indices
         bool entering = glm::dot(I, normal) < 0.0f;
-        glm::vec3 n = entering ? normal : -normal;
+        glm::vec3 n = entering ? normal : normal;
 
         float etaI = entering ? 1.0f : m.indexOfRefraction;
         float etaT = entering ? m.indexOfRefraction : 1.0f;
@@ -123,10 +123,9 @@ __host__ __device__ void scatterRay(
         return;
     }
 
-
     // Diffuse
     newDir = calculateRandomDirectionInHemisphere(normal, rng);
-    pathSegment.ray.origin = intersect + 1e-4f * normal;
+    pathSegment.ray.origin = intersect + 1e-3f * normal;
     pathSegment.ray.direction = glm::normalize(newDir);
     pathSegment.color *= m.color;
     pathSegment.remainingBounces--;
