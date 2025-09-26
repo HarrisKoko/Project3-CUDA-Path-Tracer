@@ -69,6 +69,7 @@ set(sources
     src/interactions.cu
     src/scene.cpp
     src/utilities.cpp
+    src/tiny_gltf.cc
 )
 
 set(imgui_headers

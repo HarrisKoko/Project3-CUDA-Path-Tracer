@@ -10,6 +10,8 @@
 #include <iostream>
 #include <string>
 #include <unordered_map>
+#include "gltf/tiny_gltf.h"
+
 
 using namespace std;
 using json = nlohmann::json;
@@ -22,6 +24,10 @@ Scene::Scene(string filename)
     if (ext == ".json")
     {
         loadFromJSON(filename);
+        return;
+    }
+    else if (ext == ".gltf") {
+        loadFromGLTF(filename);
         return;
     }
     else
@@ -127,4 +133,76 @@ void Scene::loadFromJSON(const std::string& jsonName)
     int arraylen = camera.resolution.x * camera.resolution.y;
     state.image.resize(arraylen);
     std::fill(state.image.begin(), state.image.end(), glm::vec3());
+}
+
+void Scene::loadFromGLTF(const std::string& gltfName) {
+    tinygltf::Model model;
+    tinygltf::TinyGLTF loader;
+    std::string err, warn;
+
+    bool loaded = (gltfName.size() >= 4 &&
+        gltfName.substr(gltfName.size() - 4) == ".glb")
+        ? loader.LoadBinaryFromFile(&model, &err, &warn, gltfName)
+        : loader.LoadASCIIFromFile(&model, &err, &warn, gltfName);
+
+    if (!warn.empty()) std::cout << "GLTF warning: " << warn << "\n";
+    if (!err.empty())  std::cerr << "GLTF error: " << err << "\n";
+    if (!loaded)       throw std::runtime_error("Failed to load glTF: " + gltfName);
+
+    if (model.meshes.empty() || model.meshes[0].primitives.empty())
+        throw std::runtime_error("No mesh data in glTF.");
+
+    const auto& prim = model.meshes[0].primitives[0];
+
+    auto posIt = prim.attributes.find("POSITION");
+    if (posIt == prim.attributes.end())
+        throw std::runtime_error("Primitive has no POSITION.");
+
+    const tinygltf::Accessor& accessor = model.accessors[posIt->second];
+    const tinygltf::BufferView& view = model.bufferViews[accessor.bufferView];
+    const tinygltf::Buffer& buffer = model.buffers[view.buffer];
+
+    const size_t stride = accessor.ByteStride(view);
+    const unsigned char* dataStart =
+        buffer.data.data() + view.byteOffset + accessor.byteOffset;
+
+    Geom geom{};
+    geom.type = MESH;
+    geom.materialid = 0; 
+
+    vertices.reserve(accessor.count);
+    for (size_t i = 0; i < accessor.count; ++i) {
+        const float* p = reinterpret_cast<const float*>(dataStart + i * stride);
+        vertices.emplace_back(p[0], p[1], p[2]);
+    }
+
+    if (prim.indices >= 0) {
+        const auto& iAcc = model.accessors[prim.indices];
+        const auto& iView = model.bufferViews[iAcc.bufferView];
+        const auto& iBuf = model.buffers[iView.buffer];
+
+        const unsigned char* iStart =
+            iBuf.data.data() + iView.byteOffset + iAcc.byteOffset;
+
+        auto readIndex = [&](size_t idx)->uint32_t {
+            switch (iAcc.componentType) {
+            case TINYGLTF_COMPONENT_TYPE_UNSIGNED_SHORT:
+                return reinterpret_cast<const uint16_t*>(iStart)[idx];
+            case TINYGLTF_COMPONENT_TYPE_UNSIGNED_INT:
+                return reinterpret_cast<const uint32_t*>(iStart)[idx];
+            case TINYGLTF_COMPONENT_TYPE_UNSIGNED_BYTE:
+                return reinterpret_cast<const uint8_t*>(iStart)[idx];
+            default:
+                throw std::runtime_error("Unsupported index type.");
+            }
+            };
+
+        indices.resize(iAcc.count);
+        for (size_t i = 0; i < iAcc.count; ++i)
+            indices[i] = readIndex(i);
+    }
+
+    geoms.push_back(std::move(geom));
+    std::cout << "Loaded " << vertices.size()
+        << " vertices from " << gltfName << "\n";
 }
