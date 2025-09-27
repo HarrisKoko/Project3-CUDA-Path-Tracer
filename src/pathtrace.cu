@@ -235,7 +235,7 @@ __global__ void computeIntersections(
     if (path_index >= num_paths) return;
 
     const PathSegment path = pathSegments[path_index];
-    const Ray rayW = path.ray; // world-space ray (direction should be normalized)
+    const Ray rayW = path.ray;
 
     float t_min_world = FLT_MAX;
     int   hit_geom_index = -1;
@@ -252,9 +252,9 @@ __global__ void computeIntersections(
         if (g.type == CUBE) {
             t_obj = boxIntersectionTest(const_cast<Geom&>(g), rayW, hitP_obj, thisNormalW, outside);
             if (t_obj > 0.f && t_obj < t_min_world) {
-                t_min_world = t_obj;            // these helpers already return world-space t
+                t_min_world = t_obj;         
                 hit_geom_index = i;
-                best_normalW = thisNormalW;     // already in world space
+                best_normalW = thisNormalW;     
             }
             continue;
         }
@@ -282,7 +282,7 @@ __global__ void computeIntersections(
 
                 float tTri_obj;
                 float u, v;      // barycentrics
-                glm::vec3 nFace; // object-space face normal (from intersection routine)
+                glm::vec3 nFace; // object-space face normal
 
                 if (intersectTriangleBarycentric(
                     rObj,
@@ -297,8 +297,6 @@ __global__ void computeIntersections(
                     // Transform to world
                     glm::vec3 P_w = glm::vec3(g.transform * glm::vec4(P_obj, 1.0f));
 
-                    // Parametric t along world-space ray: rayW.origin + tW * rayW.direction = P_w
-                    // Assumes rayW.direction is normalized (your generator does that)
                     float tW = glm::dot(P_w - rayW.origin, rayW.direction);
                     if (tW <= 0.f || tW >= t_min_world) continue;
 
@@ -309,10 +307,9 @@ __global__ void computeIntersections(
                         n_obj_interp = glm::normalize(w * normals[i0] + u * normals[i1] + v * normals[i2]);
                     }
 
-                    // To world space (handle non-uniform scale)
+                    // To world space 
                     glm::vec3 n_w = glm::normalize(glm::vec3(g.invTranspose * glm::vec4(n_obj_interp, 0.0f)));
 
-                    // Store best
                     t_min_world = tW;
                     hit_geom_index = i;
                     best_normalW = n_w;
@@ -395,8 +392,8 @@ void pathtrace(uchar4* pbo, int frame, int iter)
     checkCUDAError("generate camera ray");
 
     int depth = 0;
-    PathSegment* dev_path_end = dev_paths + pixelcount; // baseline "full set"
-    int num_paths = dev_path_end - dev_paths;           // starts as pixelcount
+    PathSegment* dev_path_end = dev_paths + pixelcount;
+    int num_paths = dev_path_end - dev_paths;          
 
     bool iterationComplete = false;
     int bounces = 0;
@@ -460,8 +457,6 @@ void pathtrace(uchar4* pbo, int frame, int iter)
         }
     }
 
-    // IMPORTANT: gather over the FULL set (pixelcount), not the compacted set.
-    // Otherwise if all rays terminated, you'd add nothing to the image.
 #if STREAM_COMPACTION
     num_paths = (int)(dev_path_end - dev_paths); // restore to pixelcount
 #endif

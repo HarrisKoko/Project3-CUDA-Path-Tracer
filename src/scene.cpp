@@ -182,7 +182,7 @@ void Scene::loadFromGLTF(const std::string& gltfName) {
         vertices.emplace_back(p[0], p[1], p[2]);
     }
 
-    // --- NORMAL (optional) ---
+    // --- NORMAL ---
     auto normIt = prim.attributes.find("NORMAL");
     if (normIt != prim.attributes.end()) {
         const tinygltf::Accessor& nAcc = model.accessors[normIt->second];

@@ -138,7 +138,7 @@ __host__ __device__ bool intersectTriangle(
     if (v < 0.0f || u + v > 1.0f) return false;
 
     float tt = glm::dot(e2, qvec) * invDet;
-    if (tt < EPS) return false; // behind ray origin
+    if (tt < EPS) return false; 
 
     t = tt;
     outNormal = glm::normalize(glm::cross(e1, e2));
