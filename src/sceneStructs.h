@@ -32,6 +32,15 @@ struct Geom
     glm::mat4 transform;
     glm::mat4 inverseTransform;
     glm::mat4 invTranspose;
+
+    int mesh_id = -1;
+};
+
+struct Triangle {
+    glm::vec3 v0, v1, v2;
+    glm::vec3 n0, n1, n2; 
+    int materialid;
+    int geomId;         
 };
 
 struct Material

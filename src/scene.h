@@ -19,4 +19,6 @@ public:
     std::vector<glm::vec3> normals;
     std::vector<unsigned int> indices;
 
+    std::vector<Triangle> tris;
+
 };

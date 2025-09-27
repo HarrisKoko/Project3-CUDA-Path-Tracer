@@ -88,6 +88,12 @@ static Material* dev_materials = NULL;
 static PathSegment* dev_paths = NULL;
 static ShadeableIntersection* dev_intersections = NULL;
 
+static glm::vec3* dev_vertices = nullptr;
+static uint32_t* dev_indices = nullptr;
+static glm::vec3* dev_normals = nullptr;
+static int        dev_index_count = 0;
+
+
 // Functor for stream compaction
 struct isRayAlive {
     __host__ __device__
@@ -130,6 +136,27 @@ void pathtraceInit(Scene* scene)
     cudaMalloc(&dev_intersections, pixelcount * sizeof(ShadeableIntersection));
     cudaMemset(dev_intersections, 0, pixelcount * sizeof(ShadeableIntersection));
 
+
+    if (!scene->vertices.empty()) {
+        cudaMalloc(&dev_vertices, scene->vertices.size() * sizeof(glm::vec3));
+        cudaMemcpy(dev_vertices, scene->vertices.data(),
+            scene->vertices.size() * sizeof(glm::vec3), cudaMemcpyHostToDevice);
+    }
+    if (!scene->indices.empty()) {
+        cudaMalloc(&dev_indices, scene->indices.size() * sizeof(uint32_t));
+        cudaMemcpy(dev_indices, scene->indices.data(),
+            scene->indices.size() * sizeof(uint32_t), cudaMemcpyHostToDevice);
+        dev_index_count = static_cast<int>(scene->indices.size());
+    }
+    if (!scene->normals.empty()) {
+        cudaMalloc(&dev_normals, scene->normals.size() * sizeof(glm::vec3));
+        cudaMemcpy(dev_normals, scene->normals.data(),
+            scene->normals.size() * sizeof(glm::vec3),
+            cudaMemcpyHostToDevice);
+    }
+
+
+
     checkCUDAError("pathtraceInit");
 }
 
@@ -140,6 +167,10 @@ void pathtraceFree()
     cudaFree(dev_geoms);
     cudaFree(dev_materials);
     cudaFree(dev_intersections);
+
+    cudaFree(dev_vertices);
+    cudaFree(dev_normals);
+    cudaFree(dev_indices);
 
     checkCUDAError("pathtraceFree");
 }
@@ -194,61 +225,114 @@ __global__ void computeIntersections(
     PathSegment* pathSegments,
     Geom* geoms,
     int geoms_size,
+    const glm::vec3* vertices,
+    const uint32_t* indices,
+    int index_count,
+    const glm::vec3* normals,
     ShadeableIntersection* intersections)
 {
     int path_index = blockIdx.x * blockDim.x + threadIdx.x;
+    if (path_index >= num_paths) return;
 
-    if (path_index < num_paths)
-    {
-        PathSegment pathSegment = pathSegments[path_index];
+    const PathSegment path = pathSegments[path_index];
+    const Ray rayW = path.ray; // world-space ray (direction should be normalized)
 
-        float t;
-        glm::vec3 intersect_point;
-        glm::vec3 normal;
-        float t_min = FLT_MAX;
-        int hit_geom_index = -1;
+    float t_min_world = FLT_MAX;
+    int   hit_geom_index = -1;
+    glm::vec3 best_normalW(0.0f);
+
+    for (int i = 0; i < geoms_size; ++i) {
+        const Geom& g = geoms[i];
+
+        float t_obj = -1.0f;
+        glm::vec3 hitP_obj, n_obj;
+        glm::vec3 thisNormalW;
         bool outside = true;
 
-        glm::vec3 tmp_intersect;
-        glm::vec3 tmp_normal;
-
-        // naive parse through global geoms
-        for (int i = 0; i < geoms_size; i++)
-        {
-            Geom& geom = geoms[i];
-
-            if (geom.type == CUBE)
-            {
-                t = boxIntersectionTest(geom, pathSegment.ray, tmp_intersect, tmp_normal, outside);
-            }
-            else if (geom.type == SPHERE)
-            {
-                t = sphereIntersectionTest(geom, pathSegment.ray, tmp_intersect, tmp_normal, outside);
-            }
-            // add more primitives as needed
-
-            // track closest hit
-            if (t > 0.0f && t_min > t)
-            {
-                t_min = t;
+        if (g.type == CUBE) {
+            t_obj = boxIntersectionTest(const_cast<Geom&>(g), rayW, hitP_obj, thisNormalW, outside);
+            if (t_obj > 0.f && t_obj < t_min_world) {
+                t_min_world = t_obj;            // these helpers already return world-space t
                 hit_geom_index = i;
-                intersect_point = tmp_intersect;
-                normal = tmp_normal;
+                best_normalW = thisNormalW;     // already in world space
             }
+            continue;
+        }
+        if (g.type == SPHERE) {
+            t_obj = sphereIntersectionTest(const_cast<Geom&>(g), rayW, hitP_obj, thisNormalW, outside);
+            if (t_obj > 0.f && t_obj < t_min_world) {
+                t_min_world = t_obj;
+                hit_geom_index = i;
+                best_normalW = thisNormalW;
+            }
+            continue;
         }
 
-        if (hit_geom_index == -1)
-        {
-            intersections[path_index].t = -1.0f;
-        }
-        else
-        {
-            intersections[path_index].t = t_min;
-            intersections[path_index].materialId = geoms[hit_geom_index].materialid;
-            intersections[path_index].surfaceNormal = normal;
+        // MESH: ray object space
+        if (g.type == MESH) {
+            Ray rObj;
+            rObj.origin = glm::vec3(g.inverseTransform * glm::vec4(rayW.origin, 1.0f));
+            rObj.direction = glm::normalize(glm::vec3(g.inverseTransform * glm::vec4(rayW.direction, 0.0f)));
+
+            // brute force all triangles (one mesh for now)
+            for (int k = 0; k + 2 < index_count; k += 3) {
+                const uint32_t i0 = indices[k + 0];
+                const uint32_t i1 = indices[k + 1];
+                const uint32_t i2 = indices[k + 2];
+
+                float tTri_obj;
+                float u, v;      // barycentrics
+                glm::vec3 nFace; // object-space face normal (from intersection routine)
+
+                if (intersectTriangleBarycentric(
+                    rObj,
+                    vertices[i0], vertices[i1], vertices[i2],
+                    tTri_obj, u, v, nFace))
+                {
+                    if (tTri_obj <= 0.f) continue;
+
+                    // Object-space hit point
+                    glm::vec3 P_obj = rObj.origin + tTri_obj * rObj.direction;
+
+                    // Transform to world
+                    glm::vec3 P_w = glm::vec3(g.transform * glm::vec4(P_obj, 1.0f));
+
+                    // Parametric t along world-space ray: rayW.origin + tW * rayW.direction = P_w
+                    // Assumes rayW.direction is normalized (your generator does that)
+                    float tW = glm::dot(P_w - rayW.origin, rayW.direction);
+                    if (tW <= 0.f || tW >= t_min_world) continue;
+
+                    // Interpolate normal if provided, else use face normal
+                    glm::vec3 n_obj_interp = nFace;
+                    if (normals != nullptr) {
+                        float w = 1.0f - u - v;
+                        n_obj_interp = glm::normalize(w * normals[i0] + u * normals[i1] + v * normals[i2]);
+                    }
+
+                    // To world space (handle non-uniform scale)
+                    glm::vec3 n_w = glm::normalize(glm::vec3(g.invTranspose * glm::vec4(n_obj_interp, 0.0f)));
+
+                    // Store best
+                    t_min_world = tW;
+                    hit_geom_index = i;
+                    best_normalW = n_w;
+                }
+            }
         }
     }
+
+    if (hit_geom_index < 0) {
+        intersections[path_index].t = -1.0f;
+    }
+    else {
+        intersections[path_index].t = t_min_world;
+        intersections[path_index].materialId = geoms[hit_geom_index].materialid;
+        intersections[path_index].surfaceNormal = best_normalW;
+    }
 }
+
+
+
 
 // Simple shader that advances / terminates rays (your BSDF logic lives in scatterRay)
 __global__ void shadeMaterial(
@@ -328,13 +412,16 @@ void pathtrace(uchar4* pbo, int frame, int iter)
             dev_paths,
             dev_geoms,
             (int)hst_scene->geoms.size(),
-            dev_intersections
-            );
+            dev_vertices,
+            dev_indices,
+            dev_index_count,
+            dev_normals,
+            dev_intersections);
+
         checkCUDAError("trace one bounce");
         cudaDeviceSynchronize();
         depth++;
 
-        // (Optional) material sorting would go here, before shading
          #if SORT_MATERIAL_ID
          thrust::sort_by_key(thrust::device,
              dev_intersections, dev_intersections + num_paths,

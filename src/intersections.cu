@@ -111,3 +111,72 @@ __host__ __device__ float sphereIntersectionTest(
 
     return glm::length(r.origin - intersectionPoint);
 }
+
+__host__ __device__ bool intersectTriangle(
+    const Ray& ray,
+    const glm::vec3& v0,
+    const glm::vec3& v1,
+    const glm::vec3& v2,
+    float& t,
+    glm::vec3& outNormal)
+{
+    const float EPS = 1e-6f;
+    glm::vec3 e1 = v1 - v0;
+    glm::vec3 e2 = v2 - v0;
+
+    glm::vec3 pvec = glm::cross(ray.direction, e2);
+    float det = glm::dot(e1, pvec);
+    if (fabs(det) < EPS) return false;
+
+    float invDet = 1.0f / det;
+    glm::vec3 tvec = ray.origin - v0;
+    float u = glm::dot(tvec, pvec) * invDet;
+    if (u < 0.0f || u > 1.0f) return false;
+
+    glm::vec3 qvec = glm::cross(tvec, e1);
+    float v = glm::dot(ray.direction, qvec) * invDet;
+    if (v < 0.0f || u + v > 1.0f) return false;
+
+    float tt = glm::dot(e2, qvec) * invDet;
+    if (tt < EPS) return false; // behind ray origin
+
+    t = tt;
+    outNormal = glm::normalize(glm::cross(e1, e2));
+    return true;
+}
+
+__host__ __device__ bool intersectTriangleBarycentric(
+    const Ray& ray,
+    const glm::vec3& v0,
+    const glm::vec3& v1,
+    const glm::vec3& v2,
+    float& t,
+    float& u,
+    float& v,
+    glm::vec3& outNormal)
+{
+    const float EPS = 1e-6f;
+    glm::vec3 e1 = v1 - v0;
+    glm::vec3 e2 = v2 - v0;
+
+    glm::vec3 pvec = glm::cross(ray.direction, e2);
+    float det = glm::dot(e1, pvec);
+    if (fabs(det) < EPS) return false;
+
+    float invDet = 1.0f / det;
+    glm::vec3 tvec = ray.origin - v0;
+    u = glm::dot(tvec, pvec) * invDet;
+    if (u < 0.0f || u > 1.0f) return false;
+
+    glm::vec3 qvec = glm::cross(tvec, e1);
+    v = glm::dot(ray.direction, qvec) * invDet;
+    if (v < 0.0f || u + v > 1.0f) return false;
+
+    float tt = glm::dot(e2, qvec) * invDet;
+    if (tt < EPS) return false; // behind ray origin
+
+    t = tt;
+    outNormal = glm::normalize(glm::cross(e1, e2)); // face normal fallback
+    return true;
+}
+

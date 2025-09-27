@@ -71,3 +71,21 @@ __host__ __device__ float sphereIntersectionTest(
     glm::vec3& intersectionPoint,
     glm::vec3& normal,
     bool& outside);
+
+__host__ __device__ bool intersectTriangle(
+    const Ray& ray,
+    const glm::vec3& v0,
+    const glm::vec3& v1,
+    const glm::vec3& v2,
+    float& t,
+    glm::vec3& outNormal);
+
+__host__ __device__ bool intersectTriangleBarycentric(
+    const Ray& ray,
+    const glm::vec3& v0,
+    const glm::vec3& v1,
+    const glm::vec3& v2,
+    float& t,
+    float& u,
+    float& v,
+    glm::vec3& outNormal);

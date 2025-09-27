@@ -79,14 +79,19 @@ void Scene::loadFromJSON(const std::string& jsonName)
     {
         const auto& type = p["TYPE"];
         Geom newGeom;
-        if (type == "cube")
-        {
+        if (type == "cube") {
             newGeom.type = CUBE;
         }
-        else
-        {
+        else if (type == "sphere") {
             newGeom.type = SPHERE;
         }
+        else if (type == "gltf") {
+            newGeom.type = MESH;
+            std::string filepath = p["FILE"];
+            loadFromGLTF(filepath);
+        }
+
+
         newGeom.materialid = MatNameToID[p["MATERIAL"]];
         const auto& trans = p["TRANS"];
         const auto& rotat = p["ROTAT"];
@@ -140,69 +145,116 @@ void Scene::loadFromGLTF(const std::string& gltfName) {
     tinygltf::TinyGLTF loader;
     std::string err, warn;
 
-    bool loaded = (gltfName.size() >= 4 &&
-        gltfName.substr(gltfName.size() - 4) == ".glb")
+    const bool isGlb = gltfName.size() >= 4 &&
+        gltfName.substr(gltfName.size() - 4) == ".glb";
+    bool loaded = isGlb
         ? loader.LoadBinaryFromFile(&model, &err, &warn, gltfName)
         : loader.LoadASCIIFromFile(&model, &err, &warn, gltfName);
 
     if (!warn.empty()) std::cout << "GLTF warning: " << warn << "\n";
     if (!err.empty())  std::cerr << "GLTF error: " << err << "\n";
-    if (!loaded)       throw std::runtime_error("Failed to load glTF: " + gltfName);
-
+    if (!loaded) throw std::runtime_error("Failed to load glTF: " + gltfName);
     if (model.meshes.empty() || model.meshes[0].primitives.empty())
         throw std::runtime_error("No mesh data in glTF.");
 
+    // Just take the first primitive for now
     const auto& prim = model.meshes[0].primitives[0];
 
+    // --- POSITION ---
     auto posIt = prim.attributes.find("POSITION");
     if (posIt == prim.attributes.end())
         throw std::runtime_error("Primitive has no POSITION.");
 
-    const tinygltf::Accessor& accessor = model.accessors[posIt->second];
-    const tinygltf::BufferView& view = model.bufferViews[accessor.bufferView];
-    const tinygltf::Buffer& buffer = model.buffers[view.buffer];
+    const tinygltf::Accessor& posAcc = model.accessors[posIt->second];
+    const tinygltf::BufferView& posBv = model.bufferViews[posAcc.bufferView];
+    const tinygltf::Buffer& posBuf = model.buffers[posBv.buffer];
 
-    const size_t stride = accessor.ByteStride(view);
-    const unsigned char* dataStart =
-        buffer.data.data() + view.byteOffset + accessor.byteOffset;
+    if (posAcc.componentType != TINYGLTF_COMPONENT_TYPE_FLOAT || posAcc.type != TINYGLTF_TYPE_VEC3)
+        throw std::runtime_error("POSITION must be float vec3.");
 
-    Geom geom{};
-    geom.type = MESH;
-    geom.materialid = 0; 
+    const size_t posStride = posAcc.ByteStride(posBv) ? posAcc.ByteStride(posBv) : sizeof(float) * 3;
+    const unsigned char* posStart = posBuf.data.data() + posBv.byteOffset + posAcc.byteOffset;
 
-    vertices.reserve(accessor.count);
-    for (size_t i = 0; i < accessor.count; ++i) {
-        const float* p = reinterpret_cast<const float*>(dataStart + i * stride);
+    const size_t baseVertex = vertices.size();
+    vertices.reserve(vertices.size() + posAcc.count);
+    for (size_t i = 0; i < posAcc.count; ++i) {
+        const float* p = reinterpret_cast<const float*>(posStart + i * posStride);
         vertices.emplace_back(p[0], p[1], p[2]);
     }
 
+    // --- NORMAL (optional) ---
+    auto normIt = prim.attributes.find("NORMAL");
+    if (normIt != prim.attributes.end()) {
+        const tinygltf::Accessor& nAcc = model.accessors[normIt->second];
+        const tinygltf::BufferView& nBv = model.bufferViews[nAcc.bufferView];
+        const tinygltf::Buffer& nBuf = model.buffers[nBv.buffer];
+
+        if (nAcc.componentType != TINYGLTF_COMPONENT_TYPE_FLOAT || nAcc.type != TINYGLTF_TYPE_VEC3)
+            throw std::runtime_error("NORMAL must be float vec3.");
+
+        const size_t nStride = nAcc.ByteStride(nBv) ? nAcc.ByteStride(nBv) : sizeof(float) * 3;
+        const unsigned char* nStart = nBuf.data.data() + nBv.byteOffset + nAcc.byteOffset;
+
+        normals.reserve(normals.size() + nAcc.count);
+        for (size_t i = 0; i < nAcc.count; ++i) {
+            const float* n = reinterpret_cast<const float*>(nStart + i * nStride);
+            normals.emplace_back(glm::normalize(glm::vec3(n[0], n[1], n[2])));
+        }
+    }
+    else {
+        // Fallback: fill with dummy normals for new verts
+        normals.resize(vertices.size(), glm::vec3(0, 1, 0));
+    }
+
+    // --- INDICES ---
+    size_t baseIndex = indices.size();
     if (prim.indices >= 0) {
         const auto& iAcc = model.accessors[prim.indices];
-        const auto& iView = model.bufferViews[iAcc.bufferView];
-        const auto& iBuf = model.buffers[iView.buffer];
+        const auto& iBv = model.bufferViews[iAcc.bufferView];
+        const auto& iBuf = model.buffers[iBv.buffer];
+        const unsigned char* iStart = iBuf.data.data() + iBv.byteOffset + iAcc.byteOffset;
 
-        const unsigned char* iStart =
-            iBuf.data.data() + iView.byteOffset + iAcc.byteOffset;
+        indices.resize(baseIndex + iAcc.count);
 
-        auto readIndex = [&](size_t idx)->uint32_t {
+        auto readIdx = [&](size_t k)->uint32_t {
             switch (iAcc.componentType) {
-            case TINYGLTF_COMPONENT_TYPE_UNSIGNED_SHORT:
-                return reinterpret_cast<const uint16_t*>(iStart)[idx];
-            case TINYGLTF_COMPONENT_TYPE_UNSIGNED_INT:
-                return reinterpret_cast<const uint32_t*>(iStart)[idx];
             case TINYGLTF_COMPONENT_TYPE_UNSIGNED_BYTE:
-                return reinterpret_cast<const uint8_t*>(iStart)[idx];
+                return reinterpret_cast<const uint8_t*>(iStart)[k];
+            case TINYGLTF_COMPONENT_TYPE_UNSIGNED_SHORT:
+                return reinterpret_cast<const uint16_t*>(iStart)[k];
+            case TINYGLTF_COMPONENT_TYPE_UNSIGNED_INT:
+                return reinterpret_cast<const uint32_t*>(iStart)[k];
             default:
                 throw std::runtime_error("Unsupported index type.");
             }
             };
 
-        indices.resize(iAcc.count);
-        for (size_t i = 0; i < iAcc.count; ++i)
-            indices[i] = readIndex(i);
+        for (size_t k = 0; k < iAcc.count; ++k)
+            indices[baseIndex + k] = readIdx(k) + static_cast<uint32_t>(baseVertex);
+    }
+    else {
+        // No index buffer: synthesize a trivial 0..N-1 index list
+        indices.resize(baseIndex + posAcc.count);
+        for (size_t k = 0; k < posAcc.count; ++k)
+            indices[baseIndex + k] = static_cast<uint32_t>(baseVertex + k);
     }
 
-    geoms.push_back(std::move(geom));
-    std::cout << "Loaded " << vertices.size()
-        << " vertices from " << gltfName << "\n";
+    // --- Geom ---
+    Geom geom{};
+    geom.type = MESH;
+    geom.materialid = 0;
+    geom.translation = glm::vec3(0);
+    geom.rotation = glm::vec3(0);
+    geom.scale = glm::vec3(1);
+    geom.transform = utilityCore::buildTransformationMatrix(geom.translation, geom.rotation, geom.scale);
+    geom.inverseTransform = glm::inverse(geom.transform);
+    geom.invTranspose = glm::inverseTranspose(geom.transform);
+
+    geoms.push_back(geom);
+
+    const size_t addedVerts = vertices.size() - baseVertex;
+    const size_t addedIdx = indices.size() - baseIndex;
+    std::cout << "Loaded " << addedVerts << " vertices, "
+        << normals.size() - baseVertex << " normals, "
+        << addedIdx << " indices from " << gltfName << "\n";
 }
