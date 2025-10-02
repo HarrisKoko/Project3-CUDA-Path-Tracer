@@ -89,3 +89,5 @@ __host__ __device__ bool intersectTriangleBarycentric(
     float& u,
     float& v,
     glm::vec3& outNormal);
+
+__host__ __device__  bool intersectAABB(const Ray& r, const AABB& b, float& tminOut, float& tmaxOut);

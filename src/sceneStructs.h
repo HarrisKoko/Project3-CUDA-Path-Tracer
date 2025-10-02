@@ -43,6 +43,21 @@ struct Triangle {
     int geomId;         
 };
 
+struct AABB {
+    glm::vec3 bmin = glm::vec3(FLT_MAX);
+    glm::vec3 bmax = glm::vec3(-FLT_MAX);
+};
+
+struct BVHNode {
+    AABB box;      
+    int left;      
+    int right;     
+    int firstTri;  
+    int triCount;  
+};
+
+
+
 struct Material
 {
     glm::vec3 color;
@@ -55,6 +70,12 @@ struct Material
     float hasRefractive;
     float indexOfRefraction;
     float emittance;
+    struct TextureInfo {
+        std::string filepath;
+        int width = 0, height = 0, channels = 0;
+        unsigned char* data = nullptr;
+    };
+    std::vector<TextureInfo> textures;
 };
 
 struct Camera

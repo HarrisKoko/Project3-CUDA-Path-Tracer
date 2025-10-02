@@ -1,3 +1,5 @@
+// pathtrace.cu
+
 #include "pathtrace.h"
 
 #include <cstdio>
@@ -7,7 +9,7 @@
 #include <thrust/random.h>
 #include <thrust/remove.h>
 #include <thrust/partition.h>
-//#include <thrust/sort.h> // keep around if you want to re-enable material sorting
+//#include <thrust/sort.h>
 
 #include "sceneStructs.h"
 #include "scene.h"
@@ -44,9 +46,9 @@ void checkCUDAErrorFn(const char* msg, const char* file, int line)
     fprintf(stderr, ": %s: %s\n", msg, cudaGetErrorString(err));
 #ifdef _WIN32
     getchar();
-#endif // _WIN32
+#endif
     exit(EXIT_FAILURE);
-#endif // ERRORCHECK
+#endif
 }
 
 __host__ __device__
@@ -56,7 +58,9 @@ thrust::default_random_engine makeSeededRandomEngine(int iter, int index, int de
     return thrust::default_random_engine(h);
 }
 
-//Kernel that writes the image to the OpenGL PBO directly.
+// Kernels
+
+// write image to PBO
 __global__ void sendImageToPBO(uchar4* pbo, glm::ivec2 resolution, int iter, glm::vec3* image)
 {
     int x = (blockIdx.x * blockDim.x) + threadIdx.x;
@@ -72,13 +76,13 @@ __global__ void sendImageToPBO(uchar4* pbo, glm::ivec2 resolution, int iter, glm
         color.y = glm::clamp((int)(pix.y / iter * 255.0), 0, 255);
         color.z = glm::clamp((int)(pix.z / iter * 255.0), 0, 255);
 
-        // Each thread writes one pixel location in the texture (textel)
         pbo[index].w = 0;
         pbo[index].x = color.x;
         pbo[index].y = color.y;
         pbo[index].z = color.z;
     }
 }
+// Globals
 
 static Scene* hst_scene = NULL;
 static GuiDataContainer* guiData = NULL;
@@ -93,8 +97,12 @@ static uint32_t* dev_indices = nullptr;
 static glm::vec3* dev_normals = nullptr;
 static int        dev_index_count = 0;
 
+static BVHNode* dev_bvh = nullptr;
+static glm::uvec3* dev_triTriplets = nullptr;
+static int        dev_triCount = 0;
 
-// Functor for stream compaction
+// Functors
+
 struct isRayAlive {
     __host__ __device__
         bool operator()(const PathSegment& path) const {
@@ -102,12 +110,14 @@ struct isRayAlive {
     }
 };
 
- struct materialsCmp {
-     __host__ __device__
-     bool operator()(const ShadeableIntersection& a, const ShadeableIntersection& b) const {
-         return a.materialId < b.materialId;
-     }
- };
+struct materialsCmp {
+    __host__ __device__
+        bool operator()(const ShadeableIntersection& a, const ShadeableIntersection& b) const {
+        return a.materialId < b.materialId;
+    }
+};
+
+// Init
 
 void InitDataContainer(GuiDataContainer* imGuiData)
 {
@@ -124,7 +134,6 @@ void pathtraceInit(Scene* scene)
     cudaMalloc(&dev_image, pixelcount * sizeof(glm::vec3));
     cudaMemset(dev_image, 0, pixelcount * sizeof(glm::vec3));
 
-    // You allocate more space than needed; that's fine. We only use first pixelcount slots.
     cudaMalloc(&dev_paths, pixelcount * samplesPerPixel * sizeof(PathSegment));
 
     cudaMalloc(&dev_geoms, scene->geoms.size() * sizeof(Geom));
@@ -135,7 +144,6 @@ void pathtraceInit(Scene* scene)
 
     cudaMalloc(&dev_intersections, pixelcount * sizeof(ShadeableIntersection));
     cudaMemset(dev_intersections, 0, pixelcount * sizeof(ShadeableIntersection));
-
 
     if (!scene->vertices.empty()) {
         cudaMalloc(&dev_vertices, scene->vertices.size() * sizeof(glm::vec3));
@@ -155,7 +163,17 @@ void pathtraceInit(Scene* scene)
             cudaMemcpyHostToDevice);
     }
 
-
+    if (!scene->bvhNodes.empty()) {
+        cudaMalloc(&dev_bvh, scene->bvhNodes.size() * sizeof(BVHNode));
+        cudaMemcpy(dev_bvh, scene->bvhNodes.data(),
+            scene->bvhNodes.size() * sizeof(BVHNode), cudaMemcpyHostToDevice);
+    }
+    if (!scene->triIndexTriplets.empty()) {
+        cudaMalloc(&dev_triTriplets, scene->triIndexTriplets.size() * sizeof(glm::uvec3));
+        cudaMemcpy(dev_triTriplets, scene->triIndexTriplets.data(),
+            scene->triIndexTriplets.size() * sizeof(glm::uvec3), cudaMemcpyHostToDevice);
+        dev_triCount = (int)scene->triIndexTriplets.size();
+    }
 
     checkCUDAError("pathtraceInit");
 }
@@ -172,13 +190,14 @@ void pathtraceFree()
     cudaFree(dev_normals);
     cudaFree(dev_indices);
 
+    cudaFree(dev_bvh);
+    cudaFree(dev_triTriplets);
+
     checkCUDAError("pathtraceFree");
 }
 
-/**
-* Generate PathSegments with rays from the camera through the screen into the
-* scene, which is the first bounce of rays.
-*/
+// Primary ray generation
+
 __global__ void generateRayFromCamera(Camera cam, int iter, int traceDepth, PathSegment* pathSegments, int numSamples)
 {
     int x = (blockIdx.x * blockDim.x) + threadIdx.x;
@@ -218,7 +237,8 @@ __global__ void generateRayFromCamera(Camera cam, int iter, int traceDepth, Path
     segment.ray.direction = glm::normalize(accumulatedDir / float(numSamples));
 }
 
-// Intersections only (no shading)
+// Intersections
+
 __global__ void computeIntersections(
     int depth,
     int num_paths,
@@ -229,6 +249,8 @@ __global__ void computeIntersections(
     const uint32_t* indices,
     int index_count,
     const glm::vec3* normals,
+    const BVHNode* bvh,
+    const glm::uvec3* triTriplets,
     ShadeableIntersection* intersections)
 {
     int path_index = blockIdx.x * blockDim.x + threadIdx.x;
@@ -252,70 +274,89 @@ __global__ void computeIntersections(
         if (g.type == CUBE) {
             t_obj = boxIntersectionTest(const_cast<Geom&>(g), rayW, hitP_obj, thisNormalW, outside);
             if (t_obj > 0.f && t_obj < t_min_world) {
-                t_min_world = t_obj;         
+                t_min_world = t_obj;
                 hit_geom_index = i;
-                best_normalW = thisNormalW;     
+                best_normalW = thisNormalW;
             }
-            continue;
         }
-        if (g.type == SPHERE) {
+        else if (g.type == SPHERE) {
             t_obj = sphereIntersectionTest(const_cast<Geom&>(g), rayW, hitP_obj, thisNormalW, outside);
             if (t_obj > 0.f && t_obj < t_min_world) {
                 t_min_world = t_obj;
                 hit_geom_index = i;
                 best_normalW = thisNormalW;
             }
-            continue;
         }
-
-        // MESH: ray object space
-        if (g.type == MESH) {
+        else if (g.type == MESH) {
             Ray rObj;
             rObj.origin = glm::vec3(g.inverseTransform * glm::vec4(rayW.origin, 1.0f));
             rObj.direction = glm::normalize(glm::vec3(g.inverseTransform * glm::vec4(rayW.direction, 0.0f)));
 
-            // brute force all triangles (one mesh for now)
-            for (int k = 0; k + 2 < index_count; k += 3) {
-                const uint32_t i0 = indices[k + 0];
-                const uint32_t i1 = indices[k + 1];
-                const uint32_t i2 = indices[k + 2];
+            float best_t_obj = FLT_MAX;
+            glm::vec3 best_n_obj(0.0f);
+            bool hitMesh = false;
 
-                float tTri_obj;
-                float u, v;      // barycentrics
-                glm::vec3 nFace; // object-space face normal
+            // Traverse BVH 
+            int stack[64]; int sp = 0; stack[sp++] = 0; // assume root at 0
+            while (sp) {
+                int ni = stack[--sp];
+                BVHNode n = bvh[ni];
 
-                if (intersectTriangleBarycentric(
-                    rObj,
-                    vertices[i0], vertices[i1], vertices[i2],
-                    tTri_obj, u, v, nFace))
-                {
-                    if (tTri_obj <= 0.f) continue;
+                float t0, t1;
+                if (!intersectAABB(rObj, n.box, t0, t1) || t0 > best_t_obj) continue;
 
-                    // Object-space hit point
-                    glm::vec3 P_obj = rObj.origin + tTri_obj * rObj.direction;
+                if (n.triCount > 0) {
+                    // Leaf
+                    for (int kk = 0; kk < n.triCount; ++kk) {
+                        const glm::uvec3 tri = triTriplets[n.firstTri + kk];
+                        const glm::vec3& v0 = vertices[tri.x];
+                        const glm::vec3& v1 = vertices[tri.y];
+                        const glm::vec3& v2 = vertices[tri.z];
 
-                    // Transform to world
-                    glm::vec3 P_w = glm::vec3(g.transform * glm::vec4(P_obj, 1.0f));
+                        float tTri, u, v;
+                        glm::vec3 nFace;
+                        if (intersectTriangleBarycentric(rObj, v0, v1, v2, tTri, u, v, nFace)) {
+                            if (tTri > 0.0f && tTri < best_t_obj) {
+                                best_t_obj = tTri;
+                                hitMesh = true;
 
-                    float tW = glm::dot(P_w - rayW.origin, rayW.direction);
-                    if (tW <= 0.f || tW >= t_min_world) continue;
-
-                    // Interpolate normal if provided, else use face normal
-                    glm::vec3 n_obj_interp = nFace;
-                    if (normals != nullptr) {
-                        float w = 1.0f - u - v;
-                        n_obj_interp = glm::normalize(w * normals[i0] + u * normals[i1] + v * normals[i2]);
+                                // Interpolate normal
+                                glm::vec3 nObj;
+                                if (normals) {
+                                    float w = 1.0f - u - v;
+                                    nObj = glm::normalize(w * normals[tri.x] + u * normals[tri.y] + v * normals[tri.z]);
+                                }
+                                else {
+                                    nObj = glm::normalize(nFace);
+                                }
+                                best_n_obj = nObj;
+                            }
+                        }
                     }
+                }
+                else {
+                    // Internal: push children
+                    if (n.right >= 0) stack[sp++] = n.right;
+                    if (n.left >= 0) stack[sp++] = n.left;
+                }
+            }
 
-                    // To world space 
-                    glm::vec3 n_w = glm::normalize(glm::vec3(g.invTranspose * glm::vec4(n_obj_interp, 0.0f)));
+            // If this mesh was hit, convert to world space and compete globally
+            if (hitMesh) {
+                const glm::vec3 hitP_obj = rObj.origin + best_t_obj * rObj.direction;
+                const glm::vec3 hitP_world = glm::vec3(g.transform * glm::vec4(hitP_obj, 1.0f));
 
-                    t_min_world = tW;
+                // World-space t along the (normalized) world ray
+                const float t_world = glm::dot(hitP_world - rayW.origin, glm::normalize(rayW.direction));
+
+                if (t_world > 0.0f && t_world < t_min_world) {
+                    t_min_world = t_world;
                     hit_geom_index = i;
-                    best_normalW = n_w;
+                    best_normalW = glm::normalize(glm::vec3(g.invTranspose * glm::vec4(best_n_obj, 0.0f)));
                 }
             }
         }
+
     }
 
     if (hit_geom_index < 0) {
@@ -328,10 +369,8 @@ __global__ void computeIntersections(
     }
 }
 
+// Shading
 
-
-
-// Simple shader that advances / terminates rays (your BSDF logic lives in scatterRay)
 __global__ void shadeMaterial(
     int iter,
     int num_paths,
@@ -345,7 +384,7 @@ __global__ void shadeMaterial(
 
     ShadeableIntersection intersection = shadeableIntersections[idx];
 
-    if (intersection.t > 0.0f) { // hit something
+    if (intersection.t > 0.0f) {
         thrust::default_random_engine rng = makeSeededRandomEngine(iter, idx, bounces);
         Material material = materials[intersection.materialId];
 
@@ -354,13 +393,14 @@ __global__ void shadeMaterial(
 
         scatterRay(pathSegments[idx], hitPoint, intersection.surfaceNormal, material, rng);
     }
-    else { // miss
+    else {
         pathSegments[idx].color = glm::vec3(0.0f);
         pathSegments[idx].remainingBounces = 0;
     }
 }
 
-// Add the current iteration's output to the overall image
+// Final gather
+
 __global__ void finalGather(int nPaths, glm::vec3* image, PathSegment* iterationPaths)
 {
     int index = (blockIdx.x * blockDim.x) + threadIdx.x;
@@ -372,34 +412,32 @@ __global__ void finalGather(int nPaths, glm::vec3* image, PathSegment* iteration
     }
 }
 
+// Main pathtrace loop
+
 void pathtrace(uchar4* pbo, int frame, int iter)
 {
     const int traceDepth = hst_scene->state.traceDepth;
     const Camera& cam = hst_scene->state.camera;
     const int pixelcount = cam.resolution.x * cam.resolution.y;
 
-    // 2D for primary rays
     const dim3 blockSize2d(8, 8);
     const dim3 blocksPerGrid2d(
         (cam.resolution.x + blockSize2d.x - 1) / blockSize2d.x,
         (cam.resolution.y + blockSize2d.y - 1) / blockSize2d.y);
 
-    // 1D for path processing
     const int blockSize1d = 128;
 
-    // Generate primary rays
     generateRayFromCamera << <blocksPerGrid2d, blockSize2d >> > (cam, iter, traceDepth, dev_paths, samplesPerPixel);
     checkCUDAError("generate camera ray");
 
     int depth = 0;
     PathSegment* dev_path_end = dev_paths + pixelcount;
-    int num_paths = dev_path_end - dev_paths;          
+    int num_paths = dev_path_end - dev_paths;
 
     bool iterationComplete = false;
     int bounces = 0;
     while (!iterationComplete)
     {
-        // We only need intersections for currently-alive paths
         cudaMemset(dev_intersections, 0, pixelcount * sizeof(ShadeableIntersection));
 
         dim3 numblocksPathSegmentTracing = (num_paths + blockSize1d - 1) / blockSize1d;
@@ -413,32 +451,31 @@ void pathtrace(uchar4* pbo, int frame, int iter)
             dev_indices,
             dev_index_count,
             dev_normals,
+            dev_bvh,
+            dev_triTriplets,
             dev_intersections);
 
         checkCUDAError("trace one bounce");
         cudaDeviceSynchronize();
         depth++;
 
-         #if SORT_MATERIAL_ID
-         thrust::sort_by_key(thrust::device,
-             dev_intersections, dev_intersections + num_paths,
-             dev_paths,
-             materialsCmp());
-         #endif
+#if SORT_MATERIAL_ID
+        thrust::sort_by_key(thrust::device,
+            dev_intersections, dev_intersections + num_paths,
+            dev_paths,
+            materialsCmp());
+#endif
 
-        // Shade alive paths
         shadeMaterial << <numblocksPathSegmentTracing, blockSize1d >> > (
             iter,
             num_paths,
             dev_intersections,
             dev_paths,
             dev_materials,
-            bounces
-            );
+            bounces);
         checkCUDAError("shade");
 
 #if STREAM_COMPACTION
-        // Compact to keep only alive rays for the NEXT bounce
         num_paths = thrust::partition(
             thrust::device,
             dev_paths,
@@ -446,7 +483,6 @@ void pathtrace(uchar4* pbo, int frame, int iter)
             isRayAlive()) - dev_paths;
 #endif
 
-        // Stop if no more bounces or no more rays
         if (depth >= traceDepth || num_paths == 0) {
             iterationComplete = true;
         }
@@ -458,17 +494,15 @@ void pathtrace(uchar4* pbo, int frame, int iter)
     }
 
 #if STREAM_COMPACTION
-    num_paths = (int)(dev_path_end - dev_paths); // restore to pixelcount
+    num_paths = (int)(dev_path_end - dev_paths);
 #endif
 
     dim3 numBlocksPixels = (num_paths + blockSize1d - 1) / blockSize1d;
     finalGather << <numBlocksPixels, blockSize1d >> > (num_paths, dev_image, dev_paths);
     checkCUDAError("finalGather");
 
-    // Send results to OpenGL buffer for rendering
     sendImageToPBO << <blocksPerGrid2d, blockSize2d >> > (pbo, cam.resolution, iter, dev_image);
 
-    // Retrieve image from GPU
     cudaMemcpy(hst_scene->state.image.data(), dev_image,
         pixelcount * sizeof(glm::vec3), cudaMemcpyDeviceToHost);
 

@@ -180,3 +180,15 @@ __host__ __device__ bool intersectTriangleBarycentric(
     return true;
 }
 
+__host__ __device__  bool intersectAABB(const Ray& r, const AABB& b, float& tminOut, float& tmaxOut)
+{
+    glm::vec3 invD = 1.0f / r.direction;
+    glm::vec3 t0 = (b.bmin - r.origin) * invD;
+    glm::vec3 t1 = (b.bmax - r.origin) * invD;
+    glm::vec3 tsm = glm::min(t0, t1);
+    glm::vec3 tbg = glm::max(t0, t1);
+    float tmin = fmaxf(fmaxf(tsm.x, tsm.y), tsm.z);
+    float tmax = fminf(fminf(tbg.x, tbg.y), tbg.z);
+    tminOut = tmin; tmaxOut = tmax;
+    return tmax >= fmaxf(tmin, 0.0f);
+}

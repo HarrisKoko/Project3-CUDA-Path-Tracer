@@ -61,7 +61,7 @@ __host__ __device__ void scatterRay(
     glm::vec3 I = glm::normalize(pathSegment.ray.direction);
     glm::vec3 newDir;
 
-    // Emissive: terminate path
+    // Emissive
     if (m.emittance > 0.0f) {
         pathSegment.color *= m.color * m.emittance;
         pathSegment.remainingBounces = 0;
@@ -95,7 +95,6 @@ __host__ __device__ void scatterRay(
         glm::vec3 dirR = glm::reflect(I, n);
         glm::vec3 dirT = glm::refract(I, n, eta);
 
-        // TIR if refract failed (length^2 ~ 0)
         bool doReflect = (glm::length(dirT)*glm::length(dirT) < 1e-12f);
         if (!doReflect) {
             thrust::uniform_real_distribution<float> u01(0.0f, 1.0f);
@@ -104,17 +103,15 @@ __host__ __device__ void scatterRay(
 
         glm::vec3 outDir = doReflect ? dirR : dirT;
 
-        // Beer–Lambert absorption on transmission only (distance since last bounce)
+        // Beer–Lambert absorption on transmission only
         if (!doReflect) {
             float dist = glm::length(intersect - pathSegment.ray.origin);
 
-            // If m.color encodes per-unit transmittance T, convert to sigma_a = -log(T)
             glm::vec3 T = glm::clamp(m.color, glm::vec3(1e-6f), glm::vec3(0.999f));
             glm::vec3 sigmaA = -glm::log(T); // or use m.sigma_a if you have it
             pathSegment.color *= glm::exp(-sigmaA * dist);
         }
 
-        // Offset along the chosen direction
         const float bias = 1e-3f;
         pathSegment.ray.direction = glm::normalize(outDir);
         pathSegment.ray.origin = intersect + bias * pathSegment.ray.direction;
