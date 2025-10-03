@@ -1,5 +1,7 @@
 #include "interactions.h"
+
 #include "utilities.h"
+
 #include <thrust/random.h>
 
 __host__ __device__ glm::vec3 calculateRandomDirectionInHemisphere(
@@ -42,17 +44,13 @@ __host__ __device__ glm::vec3 calculateRandomDirectionInHemisphere(
         + sin(around) * over * perpendicularDirection2;
 }
 
-// Schlick's approximation of Fresnel reflectance
-// Returns probability of reflection vs transmission at a dielectric interface
-__host__ __device__ float schlickFresnel(float cosTheta, float etaIncident, float etaTransmitted)
-{
-    float r0 = (etaIncident - etaTransmitted) / (etaIncident + etaTransmitted);
+__host__ __device__ float schlickFresnel(float cosTheta, float etaI, float etaT) {
+    float r0 = (etaI - etaT) / (etaI + etaT);
     r0 = r0 * r0;
-    float oneMinusCos = 1.0f - cosTheta;
-    return r0 + (1.0f - r0) * powf(oneMinusCos, 5.0f);
+    float x = 1.0f - cosTheta;
+    return r0 + (1.0f - r0) * powf(x, 5.0f);
 }
 
-// Scatter a ray based on material properties
 __host__ __device__ void scatterRay(
     PathSegment& pathSegment,
     glm::vec3 hitPoint,
@@ -85,7 +83,6 @@ __host__ __device__ void scatterRay(
     // Refractive material
     if (material.hasRefractive > 0.0f)
     {
-        // Determine if ray is entering or exiting the material
         bool isEntering = glm::dot(incomingDirection, surfaceNormal) < 0.0f;
         glm::vec3 outwardNormal = isEntering ? surfaceNormal : -surfaceNormal;
 
@@ -93,35 +90,37 @@ __host__ __device__ void scatterRay(
         float etaTransmitted = isEntering ? material.indexOfRefraction : 1.0f;
         float etaRatio = etaIncident / etaTransmitted;
 
-        // Calculate Fresnel reflectance
         float cosIncident = glm::clamp(glm::dot(-incomingDirection, outwardNormal), 0.0f, 1.0f);
         float fresnelReflectance = schlickFresnel(cosIncident, etaIncident, etaTransmitted);
 
-        // Compute reflection and refraction directions
         glm::vec3 reflectedDirection = glm::reflect(incomingDirection, outwardNormal);
         glm::vec3 refractedDirection = glm::refract(incomingDirection, outwardNormal, etaRatio);
 
-        // Check for total internal reflection
-        bool shouldReflect = (glm::length(refractedDirection) * glm::length(refractedDirection) < 1e-12f);
+        bool shouldReflect = glm::length(refractedDirection)* glm::length(refractedDirection) < 1e-12f;
         if (!shouldReflect)
         {
-            // Use Fresnel to stochastically choose between reflection and refraction
             thrust::uniform_real_distribution<float> u01(0.0f, 1.0f);
             shouldReflect = (u01(rng) < fresnelReflectance);
         }
 
         glm::vec3 finalDirection = shouldReflect ? reflectedDirection : refractedDirection;
 
-        // Apply Beer-Lambert absorption for transmitted rays
+        // Beer–Lambert absorption for transmitted rays
         if (!shouldReflect)
         {
             float travelDistance = glm::length(hitPoint - pathSegment.ray.origin);
 
-            // Compute absorption coefficient from material color
-            glm::vec3 transmittance = glm::clamp(material.color, glm::vec3(1e-6f), glm::vec3(0.999f));
-            glm::vec3 absorptionCoefficient = -glm::log(transmittance);
-            pathSegment.color *= glm::exp(-absorptionCoefficient * travelDistance);
-        }
+            glm::vec3 T = glm::clamp(material.color,
+                glm::vec3(1e-6f),
+                glm::vec3(0.999f));
+
+            glm::vec3 sigmaA(-logf(T.x), -logf(T.y), -logf(T.z));
+            glm::vec3 attenuation(expf(-sigmaA.x * travelDistance),
+                expf(-sigmaA.y * travelDistance),
+                expf(-sigmaA.z * travelDistance));
+
+            pathSegment.color *= attenuation;
+        } 
 
         const float rayBias = 1e-3f;
         pathSegment.ray.direction = glm::normalize(finalDirection);

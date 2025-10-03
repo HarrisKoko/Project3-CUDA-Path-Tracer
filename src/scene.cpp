@@ -88,7 +88,18 @@ void Scene::loadFromJSON(const std::string& jsonName)
         else if (type == "gltf") {
             newGeom.type = MESH;
             std::string filepath = p["FILE"];
-            loadFromGLTF(filepath);
+
+            // Get transformation parameters from JSON
+            const auto& trans = p["TRANS"];
+            const auto& rotat = p["ROTAT"];
+            const auto& scale = p["SCALE"];
+            glm::vec3 translation = glm::vec3(trans[0], trans[1], trans[2]);
+            glm::vec3 rotation = glm::vec3(rotat[0], rotat[1], rotat[2]);
+            glm::vec3 scaleVec = glm::vec3(scale[0], scale[1], scale[2]);
+
+            loadFromGLTF(filepath, translation, rotation, scaleVec);
+
+            continue; 
         }
 
 
@@ -138,6 +149,9 @@ void Scene::loadFromJSON(const std::string& jsonName)
     int arraylen = camera.resolution.x * camera.resolution.y;
     state.image.resize(arraylen);
     std::fill(state.image.begin(), state.image.end(), glm::vec3());
+
+    // Build BVH after all objects are loaded
+    buildBVH();
 }
 
 // Helper functions for BVH construction
@@ -327,13 +341,15 @@ void Scene::buildBVH()
     }
 }
 
-void Scene::loadFromGLTF(const std::string& gltfFilePath)
+void Scene::loadFromGLTF(const std::string& gltfFilePath,
+    const glm::vec3& translation,
+    const glm::vec3& rotation,
+    const glm::vec3& scale)
 {
     tinygltf::Model model;
     tinygltf::TinyGLTF loader;
     std::string errorMessage, warningMessage;
 
-    // Determine if file is binary (.glb) or ASCII (.gltf)
     bool isBinaryFormat = gltfFilePath.size() >= 4 &&
         gltfFilePath.substr(gltfFilePath.size() - 4) == ".glb";
 
@@ -402,7 +418,6 @@ void Scene::loadFromGLTF(const std::string& gltfFilePath)
             }
             else
             {
-                // Use default up-facing normals if none provided
                 normals.resize(vertices.size(), glm::vec3(0, 1, 0));
             }
 
@@ -480,13 +495,13 @@ void Scene::loadFromGLTF(const std::string& gltfFilePath)
             int materialID = materials.size();
             materials.push_back(newMaterial);
 
-            // Create geometry for this primitive
+            // Create geometry for this primitive with applied transforms
             Geom geometry{};
             geometry.type = MESH;
             geometry.materialid = materialID;
-            geometry.translation = glm::vec3(0);
-            geometry.rotation = glm::vec3(0);
-            geometry.scale = glm::vec3(1);
+            geometry.translation = translation;  
+            geometry.rotation = rotation;        
+            geometry.scale = scale;              
             geometry.transform = utilityCore::buildTransformationMatrix(
                 geometry.translation, geometry.rotation, geometry.scale);
             geometry.inverseTransform = glm::inverse(geometry.transform);
@@ -495,7 +510,9 @@ void Scene::loadFromGLTF(const std::string& gltfFilePath)
             geoms.push_back(geometry);
         }
     }
-
-    // Build BVH acceleration structure for raytracing
-    buildBVH();
+    std::cout << "GLTF loaded: "
+        << vertices.size() << " verts, "
+        << normals.size() << " normals, "
+        << triIndexTriplets.size() << " tris, "
+        << std::endl;
 }
