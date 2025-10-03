@@ -140,287 +140,362 @@ void Scene::loadFromJSON(const std::string& jsonName)
     std::fill(state.image.begin(), state.image.end(), glm::vec3());
 }
 
-
-namespace {
-    inline AABB merge(const AABB& a, const AABB& b) {
-        AABB r; r.bmin = glm::min(a.bmin, b.bmin); r.bmax = glm::max(a.bmax, b.bmax); return r;
-    }
-    inline AABB triBounds(const glm::vec3& a, const glm::vec3& b, const glm::vec3& c) {
-        AABB r;
-        r.bmin = glm::min(a, glm::min(b, c));
-        r.bmax = glm::max(a, glm::max(b, c));
-        return r;
-    }
-    inline glm::vec3 triCentroid(const glm::vec3& a, const glm::vec3& b, const glm::vec3& c) {
-        return (a + b + c) * (1.0f / 3.0f);
-    }
-
-    // compute bounds & centroid-bounds of a [start,count) range over "order"
-    inline void computeRangeBounds(
-        const std::vector<glm::uvec3>& tris,
-        const std::vector<glm::vec3>& verts,
-        const std::vector<int>& order,
-        int start, int count,
-        AABB& outBounds, AABB& outCBox)
+// Helper functions for BVH construction
+namespace
+{
+    inline AABB mergeBoundingBoxes(const AABB& boxA, const AABB& boxB)
     {
-        AABB b{}, cb{};
-        b.bmin = glm::vec3(FLT_MAX); b.bmax = glm::vec3(-FLT_MAX);
-        cb = b;
-        for (int i = 0; i < count; ++i) {
-            const glm::uvec3 t = tris[order[start + i]];
-            const glm::vec3& v0 = verts[t.x];
-            const glm::vec3& v1 = verts[t.y];
-            const glm::vec3& v2 = verts[t.z];
-            b = merge(b, triBounds(v0, v1, v2));
-            AABB cc; const glm::vec3 c = triCentroid(v0, v1, v2);
-            cc.bmin = cc.bmax = c;
-            cb = merge(cb, cc);
-        }
-        outBounds = b; outCBox = cb;
+        AABB result;
+        result.bmin = glm::min(boxA.bmin, boxB.bmin);
+        result.bmax = glm::max(boxA.bmax, boxB.bmax);
+        return result;
+    }
+
+    inline AABB getTriangleBounds(const glm::vec3& vertexA, const glm::vec3& vertexB, const glm::vec3& vertexC)
+    {
+        AABB bounds;
+        bounds.bmin = glm::min(vertexA, glm::min(vertexB, vertexC));
+        bounds.bmax = glm::max(vertexA, glm::max(vertexB, vertexC));
+        return bounds;
+    }
+
+    inline glm::vec3 getTriangleCentroid(const glm::vec3& vertexA, const glm::vec3& vertexB, const glm::vec3& vertexC)
+    {
+        return (vertexA + vertexB + vertexC) * (1.0f / 3.0f);
     }
 }
 
-void Scene::buildBVH() {
-    if (triIndexTriplets.empty()) { bvhNodes.clear(); return; }
+void Scene::buildBVH()
+{
+    if (triIndexTriplets.empty())
+    {
+        bvhNodes.clear();
+        return;
+    }
 
-    // 1) Permutation over triangles
-    std::vector<int> order(triIndexTriplets.size());
-    std::iota(order.begin(), order.end(), 0);
+    // Create a permutation array to track triangle ordering during splits
+    std::vector<int> triangleOrder(triIndexTriplets.size());
+    std::iota(triangleOrder.begin(), triangleOrder.end(), 0);
 
-    // 2) READ-ONLY staging copy to avoid clobbering sources while writing leaves
-    const std::vector<glm::uvec3> triSrc = triIndexTriplets;
+    // Keep a read-only copy of the original triangle data
+    // This prevents us from overwriting data while building the tree
+    const std::vector<glm::uvec3> originalTriangles = triIndexTriplets;
 
-    struct Task { int start, count; int parent; bool isLeft; };
+    struct BuildTask
+    {
+        int startIndex;
+        int triangleCount;
+        int parentNodeIndex;
+        bool isLeftChild;
+    };
 
     bvhNodes.clear();
-    bvhNodes.reserve(int(triIndexTriplets.size() * 2));
+    bvhNodes.reserve(triIndexTriplets.size() * 2); // Reserve space for worst case
 
-    // root
-    const int root = (int)bvhNodes.size();
-    bvhNodes.push_back(BVHNode{}); // zero-init: box={min=+inf,max=-inf}, left/right=-1, firstTri=-1, triCount=0
+    // Create root node
+    const int rootIndex = (int)bvhNodes.size();
+    bvhNodes.push_back(BVHNode{});
 
-    std::vector<Task> stack;
-    stack.push_back({ 0, (int)order.size(), -1, true });
+    std::vector<BuildTask> taskStack;
+    taskStack.push_back({ 0, (int)triangleOrder.size(), -1, true });
 
-    const int LeafThreshold = 8;
+    const int maxTrianglesPerLeaf = 8;
 
-    auto computeRangeBounds = [&](int start, int count, AABB& outBounds, AABB& outCBox) {
-        AABB b, cb;
-        b.bmin = glm::vec3(FLT_MAX); b.bmax = glm::vec3(-FLT_MAX);
-        cb = b;
-        for (int i = 0; i < count; ++i) {
-            const glm::uvec3 t = triSrc[order[start + i]];
-            const glm::vec3& v0 = vertices[t.x];
-            const glm::vec3& v1 = vertices[t.y];
-            const glm::vec3& v2 = vertices[t.z];
-            // tri bounds
-            AABB tb;
-            tb.bmin = glm::min(v0, glm::min(v1, v2));
-            tb.bmax = glm::max(v0, glm::max(v1, v2));
-            b.bmin = glm::min(b.bmin, tb.bmin);
-            b.bmax = glm::max(b.bmax, tb.bmax);
-            // centroid box
-            const glm::vec3 c = (v0 + v1 + v2) * (1.0f / 3.0f);
-            cb.bmin = glm::min(cb.bmin, c);
-            cb.bmax = glm::max(cb.bmax, c);
-        }
-        outBounds = b; outCBox = cb;
+    // Lambda function to compute bounds for a range of triangles
+    auto computeRangeBounds = [&](int start, int count, AABB& outBounds, AABB& outCentroidBox)
+        {
+            AABB triangleBounds, centroidBounds;
+            triangleBounds.bmin = glm::vec3(FLT_MAX);
+            triangleBounds.bmax = glm::vec3(-FLT_MAX);
+            centroidBounds = triangleBounds;
+
+            for (int i = 0; i < count; ++i)
+            {
+                const glm::uvec3 triangle = originalTriangles[triangleOrder[start + i]];
+                const glm::vec3& v0 = vertices[triangle.x];
+                const glm::vec3& v1 = vertices[triangle.y];
+                const glm::vec3& v2 = vertices[triangle.z];
+
+                // Expand triangle bounds
+                AABB triBounds;
+                triBounds.bmin = glm::min(v0, glm::min(v1, v2));
+                triBounds.bmax = glm::max(v0, glm::max(v1, v2));
+                triangleBounds.bmin = glm::min(triangleBounds.bmin, triBounds.bmin);
+                triangleBounds.bmax = glm::max(triangleBounds.bmax, triBounds.bmax);
+
+                // Expand centroid bounds
+                const glm::vec3 centroid = (v0 + v1 + v2) * (1.0f / 3.0f);
+                centroidBounds.bmin = glm::min(centroidBounds.bmin, centroid);
+                centroidBounds.bmax = glm::max(centroidBounds.bmax, centroid);
+            }
+
+            outBounds = triangleBounds;
+            outCentroidBox = centroidBounds;
         };
 
-    while (!stack.empty()) {
-        Task t = stack.back(); stack.pop_back();
+    // Build BVH using a stack-based approach
+    while (!taskStack.empty())
+    {
+        BuildTask task = taskStack.back();
+        taskStack.pop_back();
 
-        AABB nodeB, cbox;
-        computeRangeBounds(t.start, t.count, nodeB, cbox);
+        AABB nodeBounds, centroidBox;
+        computeRangeBounds(task.startIndex, task.triangleCount, nodeBounds, centroidBox);
 
-        int nodeIdx = (t.parent == -1) ? root : (int)bvhNodes.size();
-        if (t.parent != -1) {
-            if (t.isLeft) bvhNodes[t.parent].left = nodeIdx;
-            else          bvhNodes[t.parent].right = nodeIdx;
+        // Determine node index
+        int currentNodeIndex = (task.parentNodeIndex == -1) ? rootIndex : (int)bvhNodes.size();
+
+        // Link to parent
+        if (task.parentNodeIndex != -1)
+        {
+            if (task.isLeftChild)
+                bvhNodes[task.parentNodeIndex].left = currentNodeIndex;
+            else
+                bvhNodes[task.parentNodeIndex].right = currentNodeIndex;
+
             bvhNodes.push_back(BVHNode{});
         }
 
-        BVHNode& node = bvhNodes[nodeIdx];
-        node.box = nodeB;
-        node.left = node.right = -1;
-        node.firstTri = -1;
-        node.triCount = 0;
+        BVHNode& currentNode = bvhNodes[currentNodeIndex];
+        currentNode.box = nodeBounds;
+        currentNode.left = -1;
+        currentNode.right = -1;
+        currentNode.firstTri = -1;
+        currentNode.triCount = 0;
 
-        // Leaf
-        if (t.count <= LeafThreshold) {
-            node.firstTri = t.start;
-            node.triCount = t.count;
-            // WRITE triangles for this leaf from triSrc -> triIndexTriplets
-            for (int i = 0; i < t.count; ++i) {
-                const int dst = t.start + i;
-                const int src = order[dst];
-                triIndexTriplets[dst] = triSrc[src];  // <-- crucial: read from triSrc, not the array we're mutating
+        // Create leaf node if triangle count is small enough
+        if (task.triangleCount <= maxTrianglesPerLeaf)
+        {
+            currentNode.firstTri = task.startIndex;
+            currentNode.triCount = task.triangleCount;
+
+            // Copy triangles to their final positions
+            for (int i = 0; i < task.triangleCount; ++i)
+            {
+                int destinationIndex = task.startIndex + i;
+                int sourceIndex = triangleOrder[destinationIndex];
+                triIndexTriplets[destinationIndex] = originalTriangles[sourceIndex];
             }
             continue;
         }
 
-        // Split by widest centroid axis
-        glm::vec3 ext = cbox.bmax - cbox.bmin;
-        int axis = (ext.y > ext.x && ext.y >= ext.z) ? 1 : (ext.z > ext.x && ext.z >= ext.y ? 2 : 0);
-        float splitPos = 0.5f * (cbox.bmin[axis] + cbox.bmax[axis]);
+        // Split node - find the widest axis of the centroid bounding box
+        glm::vec3 centroidExtent = centroidBox.bmax - centroidBox.bmin;
+        int splitAxis = 0; // Default to X axis
 
-        int i = t.start, j = t.start + t.count - 1;
-        while (i <= j) {
-            const glm::uvec3 tri = triSrc[order[i]];
-            const glm::vec3 c = (vertices[tri.x] + vertices[tri.y] + vertices[tri.z]) * (1.0f / 3.0f);
-            if (c[axis] < splitPos) ++i; else std::swap(order[i], order[j--]);
+        if (centroidExtent.y > centroidExtent.x && centroidExtent.y >= centroidExtent.z)
+            splitAxis = 1; // Y axis
+        else if (centroidExtent.z > centroidExtent.x && centroidExtent.z >= centroidExtent.y)
+            splitAxis = 2; // Z axis
+
+        float splitPosition = 0.5f * (centroidBox.bmin[splitAxis] + centroidBox.bmax[splitAxis]);
+
+        // Partition triangles around the split position
+        int leftPointer = task.startIndex;
+        int rightPointer = task.startIndex + task.triangleCount - 1;
+
+        while (leftPointer <= rightPointer)
+        {
+            const glm::uvec3 triangle = originalTriangles[triangleOrder[leftPointer]];
+            const glm::vec3 centroid = (vertices[triangle.x] + vertices[triangle.y] + vertices[triangle.z]) * (1.0f / 3.0f);
+
+            if (centroid[splitAxis] < splitPosition)
+                ++leftPointer;
+            else
+                std::swap(triangleOrder[leftPointer], triangleOrder[rightPointer--]);
         }
-        int leftCount = i - t.start;
-        if (leftCount == 0 || leftCount == t.count) leftCount = t.count / 2;
 
-        // Push children (right first so left is processed last)
-        stack.push_back({ t.start + leftCount, t.count - leftCount, nodeIdx, false });
-        stack.push_back({ t.start,             leftCount,           nodeIdx, true });
+        int leftChildCount = leftPointer - task.startIndex;
+
+        // Handle degenerate case where all triangles go to one side
+        if (leftChildCount == 0 || leftChildCount == task.triangleCount)
+            leftChildCount = task.triangleCount / 2;
+
+        // Push child tasks (right first so left is processed next)
+        taskStack.push_back({
+            task.startIndex + leftChildCount,
+            task.triangleCount - leftChildCount,
+            currentNodeIndex,
+            false
+            });
+        taskStack.push_back({
+            task.startIndex,
+            leftChildCount,
+            currentNodeIndex,
+            true
+            });
     }
 }
 
-
-
-void Scene::loadFromGLTF(const std::string& gltfName) {
+void Scene::loadFromGLTF(const std::string& gltfFilePath)
+{
     tinygltf::Model model;
     tinygltf::TinyGLTF loader;
-    std::string err, warn;
+    std::string errorMessage, warningMessage;
 
-    bool isGlb = gltfName.size() >= 4 && gltfName.substr(gltfName.size() - 4) == ".glb";
-    bool loaded = isGlb
-        ? loader.LoadBinaryFromFile(&model, &err, &warn, gltfName)
-        : loader.LoadASCIIFromFile(&model, &err, &warn, gltfName);
+    // Determine if file is binary (.glb) or ASCII (.gltf)
+    bool isBinaryFormat = gltfFilePath.size() >= 4 &&
+        gltfFilePath.substr(gltfFilePath.size() - 4) == ".glb";
 
-    if (!warn.empty()) std::cout << "GLTF warning: " << warn << "\n";
-    if (!err.empty())  std::cerr << "GLTF error: " << err << "\n";
-    if (!loaded) throw std::runtime_error("Failed to load glTF: " + gltfName);
+    bool loadedSuccessfully = isBinaryFormat
+        ? loader.LoadBinaryFromFile(&model, &errorMessage, &warningMessage, gltfFilePath)
+        : loader.LoadASCIIFromFile(&model, &errorMessage, &warningMessage, gltfFilePath);
 
-    // --- Load textures into our list ---
-    textures.clear();
-    for (const auto& img : model.images) {
-        TextureInfo tex;
-        tex.filepath = img.uri; // relative path
-        textures.push_back(tex);
-    }
+    if (!warningMessage.empty())
+        std::cout << "GLTF warning: " << warningMessage << "\n";
 
-    // --- Loop over meshes & primitives ---
-    for (const auto& mesh : model.meshes) {
-        for (const auto& prim : mesh.primitives) {
-            // POSITION
-            auto posIt = prim.attributes.find("POSITION");
-            if (posIt == prim.attributes.end()) continue;
+    if (!errorMessage.empty())
+        std::cerr << "GLTF error: " << errorMessage << "\n";
 
-            const tinygltf::Accessor& posAcc = model.accessors[posIt->second];
-            const tinygltf::BufferView& posBv = model.bufferViews[posAcc.bufferView];
-            const tinygltf::Buffer& posBuf = model.buffers[posBv.buffer];
-            const unsigned char* posStart = posBuf.data.data() + posBv.byteOffset + posAcc.byteOffset;
-            size_t posStride = posAcc.ByteStride(posBv) ? posAcc.ByteStride(posBv) : sizeof(float) * 3;
+    if (!loadedSuccessfully)
+        throw std::runtime_error("Failed to load glTF file: " + gltfFilePath);
 
-            size_t baseVertex = vertices.size();
-            for (size_t i = 0; i < posAcc.count; ++i) {
-                const float* p = reinterpret_cast<const float*>(posStart + i * posStride);
-                vertices.emplace_back(p[0], p[1], p[2]);
+    // Process each mesh in the model
+    for (const auto& mesh : model.meshes)
+    {
+        for (const auto& primitive : mesh.primitives)
+        {
+            // Load vertex positions
+            auto positionIterator = primitive.attributes.find("POSITION");
+            if (positionIterator == primitive.attributes.end())
+                continue; // Skip primitives without positions
+
+            const tinygltf::Accessor& positionAccessor = model.accessors[positionIterator->second];
+            const tinygltf::BufferView& positionBufferView = model.bufferViews[positionAccessor.bufferView];
+            const tinygltf::Buffer& positionBuffer = model.buffers[positionBufferView.buffer];
+
+            const unsigned char* positionDataStart = positionBuffer.data.data() +
+                positionBufferView.byteOffset +
+                positionAccessor.byteOffset;
+            size_t positionStride = positionAccessor.ByteStride(positionBufferView)
+                ? positionAccessor.ByteStride(positionBufferView)
+                : sizeof(float) * 3;
+
+            size_t baseVertexIndex = vertices.size();
+
+            for (size_t i = 0; i < positionAccessor.count; ++i)
+            {
+                const float* position = reinterpret_cast<const float*>(positionDataStart + i * positionStride);
+                vertices.emplace_back(position[0], position[1], position[2]);
             }
 
-            // NORMAL
-            auto normIt = prim.attributes.find("NORMAL");
-            if (normIt != prim.attributes.end()) {
-                const auto& nAcc = model.accessors[normIt->second];
-                const auto& nBv  = model.bufferViews[nAcc.bufferView];
-                const auto& nBuf = model.buffers[nBv.buffer];
-                const unsigned char* nStart = nBuf.data.data() + nBv.byteOffset + nAcc.byteOffset;
-                size_t nStride = nAcc.ByteStride(nBv) ? nAcc.ByteStride(nBv) : sizeof(float) * 3;
+            // Load vertex normals (if available)
+            auto normalIterator = primitive.attributes.find("NORMAL");
+            if (normalIterator != primitive.attributes.end())
+            {
+                const auto& normalAccessor = model.accessors[normalIterator->second];
+                const auto& normalBufferView = model.bufferViews[normalAccessor.bufferView];
+                const auto& normalBuffer = model.buffers[normalBufferView.buffer];
 
-                for (size_t i = 0; i < nAcc.count; ++i) {
-                    const float* n = reinterpret_cast<const float*>(nStart + i * nStride);
-                    normals.emplace_back(glm::normalize(glm::vec3(n[0], n[1], n[2])));
+                const unsigned char* normalDataStart = normalBuffer.data.data() +
+                    normalBufferView.byteOffset +
+                    normalAccessor.byteOffset;
+                size_t normalStride = normalAccessor.ByteStride(normalBufferView)
+                    ? normalAccessor.ByteStride(normalBufferView)
+                    : sizeof(float) * 3;
+
+                for (size_t i = 0; i < normalAccessor.count; ++i)
+                {
+                    const float* normal = reinterpret_cast<const float*>(normalDataStart + i * normalStride);
+                    normals.emplace_back(glm::normalize(glm::vec3(normal[0], normal[1], normal[2])));
                 }
-            } else {
-                normals.resize(vertices.size(), glm::vec3(0,1,0));
+            }
+            else
+            {
+                // Use default up-facing normals if none provided
+                normals.resize(vertices.size(), glm::vec3(0, 1, 0));
             }
 
-            // UVs
-            auto uvIt = prim.attributes.find("TEXCOORD_0");
-            if (uvIt != prim.attributes.end()) {
-                const auto& uvAcc = model.accessors[uvIt->second];
-                const auto& uvBv  = model.bufferViews[uvAcc.bufferView];
-                const auto& uvBuf = model.buffers[uvBv.buffer];
-                const unsigned char* uvStart = uvBuf.data.data() + uvBv.byteOffset + uvAcc.byteOffset;
-                size_t uvStride = uvAcc.ByteStride(uvBv) ? uvAcc.ByteStride(uvBv) : sizeof(float) * 2;
+            // Load indices
+            size_t baseIndexPosition = indices.size();
 
-                for (size_t i = 0; i < uvAcc.count; ++i) {
-                    const float* uv = reinterpret_cast<const float*>(uvStart + i * uvStride);
-                    uvs.emplace_back(uv[0], uv[1]);
+            if (primitive.indices >= 0)
+            {
+                const auto& indexAccessor = model.accessors[primitive.indices];
+                const auto& indexBufferView = model.bufferViews[indexAccessor.bufferView];
+                const auto& indexBuffer = model.buffers[indexBufferView.buffer];
+                const unsigned char* indexDataStart = indexBuffer.data.data() +
+                    indexBufferView.byteOffset +
+                    indexAccessor.byteOffset;
+
+                indices.resize(baseIndexPosition + indexAccessor.count);
+
+                // Helper to read different index types
+                auto readIndex = [&](size_t k) -> uint32_t
+                    {
+                        switch (indexAccessor.componentType)
+                        {
+                        case TINYGLTF_COMPONENT_TYPE_UNSIGNED_BYTE:
+                            return reinterpret_cast<const uint8_t*>(indexDataStart)[k];
+                        case TINYGLTF_COMPONENT_TYPE_UNSIGNED_SHORT:
+                            return reinterpret_cast<const uint16_t*>(indexDataStart)[k];
+                        case TINYGLTF_COMPONENT_TYPE_UNSIGNED_INT:
+                            return reinterpret_cast<const uint32_t*>(indexDataStart)[k];
+                        default:
+                            throw std::runtime_error("Unsupported index component type.");
+                        }
+                    };
+
+                for (size_t k = 0; k < indexAccessor.count; ++k)
+                    indices[baseIndexPosition + k] = readIndex(k) + static_cast<uint32_t>(baseVertexIndex);
+            }
+            else
+            {
+                // Generate sequential indices if none provided
+                indices.resize(baseIndexPosition + positionAccessor.count);
+                for (size_t k = 0; k < positionAccessor.count; ++k)
+                    indices[baseIndexPosition + k] = static_cast<uint32_t>(baseVertexIndex + k);
+            }
+
+            // Build triangles from indices
+            for (size_t k = baseIndexPosition; k + 2 < indices.size(); k += 3)
+            {
+                triIndexTriplets.emplace_back(indices[k], indices[k + 1], indices[k + 2]);
+            }
+
+            // Load material
+            Material newMaterial{};
+
+            if (primitive.material >= 0)
+            {
+                const auto& gltfMaterial = model.materials[primitive.material];
+                auto baseColorFactor = gltfMaterial.pbrMetallicRoughness.baseColorFactor;
+                newMaterial.color = glm::vec3(baseColorFactor[0], baseColorFactor[1], baseColorFactor[2]);
+
+                // Check for base color texture
+                if (gltfMaterial.pbrMetallicRoughness.baseColorTexture.index >= 0)
+                {
+                    int textureIndex = gltfMaterial.pbrMetallicRoughness.baseColorTexture.index;
+                    int imageIndex = model.textures[textureIndex].source;
+                    newMaterial.color = glm::vec3(1); // Will be replaced by sampled texture
+                    // TODO: Store material-to-texture mapping
                 }
-            } else {
-                uvs.resize(vertices.size(), glm::vec2(0));
+            }
+            else
+            {
+                // Default gray material
+                newMaterial.color = glm::vec3(0.8f);
             }
 
-            // INDICES
-            size_t baseIndex = indices.size();
-            if (prim.indices >= 0) {
-                const auto& iAcc = model.accessors[prim.indices];
-                const auto& iBv  = model.bufferViews[iAcc.bufferView];
-                const auto& iBuf = model.buffers[iBv.buffer];
-                const unsigned char* iStart = iBuf.data.data() + iBv.byteOffset + iAcc.byteOffset;
+            int materialID = materials.size();
+            materials.push_back(newMaterial);
 
-                indices.resize(baseIndex + iAcc.count);
-                auto readIdx = [&](size_t k)->uint32_t {
-                    switch (iAcc.componentType) {
-                        case TINYGLTF_COMPONENT_TYPE_UNSIGNED_BYTE:  return reinterpret_cast<const uint8_t*>(iStart)[k];
-                        case TINYGLTF_COMPONENT_TYPE_UNSIGNED_SHORT: return reinterpret_cast<const uint16_t*>(iStart)[k];
-                        case TINYGLTF_COMPONENT_TYPE_UNSIGNED_INT:   return reinterpret_cast<const uint32_t*>(iStart)[k];
-                        default: throw std::runtime_error("Unsupported index type.");
-                    }
-                };
-                for (size_t k = 0; k < iAcc.count; ++k)
-                    indices[baseIndex + k] = readIdx(k) + static_cast<uint32_t>(baseVertex);
-            } else {
-                indices.resize(baseIndex + posAcc.count);
-                for (size_t k = 0; k < posAcc.count; ++k)
-                    indices[baseIndex + k] = static_cast<uint32_t>(baseVertex + k);
-            }
+            // Create geometry for this primitive
+            Geom geometry{};
+            geometry.type = MESH;
+            geometry.materialid = materialID;
+            geometry.translation = glm::vec3(0);
+            geometry.rotation = glm::vec3(0);
+            geometry.scale = glm::vec3(1);
+            geometry.transform = utilityCore::buildTransformationMatrix(
+                geometry.translation, geometry.rotation, geometry.scale);
+            geometry.inverseTransform = glm::inverse(geometry.transform);
+            geometry.invTranspose = glm::inverseTranspose(geometry.transform);
 
-            // Triangles
-            for (size_t k = baseIndex; k + 2 < indices.size(); k += 3) {
-                triIndexTriplets.emplace_back(indices[k], indices[k+1], indices[k+2]);
-            }
-
-            // Material
-            Material newMat{};
-            if (prim.material >= 0) {
-                const auto& gltfMat = model.materials[prim.material];
-                auto f = gltfMat.pbrMetallicRoughness.baseColorFactor;
-                newMat.color = glm::vec3(f[0], f[1], f[2]);
-
-                if (gltfMat.pbrMetallicRoughness.baseColorTexture.index >= 0) {
-                    int texIndex = gltfMat.pbrMetallicRoughness.baseColorTexture.index;
-                    int imgIndex = model.textures[texIndex].source;
-                    newMat.color = glm::vec3(1); // will be replaced by sampled texture
-                    // Save texture association
-                    // e.g. store materialID -> imgIndex mapping
-                }
-            } else {
-                newMat.color = glm::vec3(0.8f);
-            }
-
-            int matID = materials.size();
-            materials.push_back(newMat);
-
-            // Geom for this primitive
-            Geom geom{};
-            geom.type = MESH;
-            geom.materialid = matID;
-            geom.translation = glm::vec3(0);
-            geom.rotation = glm::vec3(0);
-            geom.scale = glm::vec3(1);
-            geom.transform = utilityCore::buildTransformationMatrix(geom.translation, geom.rotation, geom.scale);
-            geom.inverseTransform = glm::inverse(geom.transform);
-            geom.invTranspose = glm::inverseTranspose(geom.transform);
-
-            geoms.push_back(geom);
+            geoms.push_back(geometry);
         }
     }
 
+    // Build BVH acceleration structure for raytracing
     buildBVH();
 }

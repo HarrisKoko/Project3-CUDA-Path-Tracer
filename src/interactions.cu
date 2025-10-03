@@ -1,7 +1,5 @@
 #include "interactions.h"
-
 #include "utilities.h"
-
 #include <thrust/random.h>
 
 __host__ __device__ glm::vec3 calculateRandomDirectionInHemisphere(
@@ -44,90 +42,99 @@ __host__ __device__ glm::vec3 calculateRandomDirectionInHemisphere(
         + sin(around) * over * perpendicularDirection2;
 }
 
-__host__ __device__ float schlickFresnel(float cosTheta, float etaI, float etaT) {
-    float r0 = (etaI - etaT) / (etaI + etaT);
+// Schlick's approximation of Fresnel reflectance
+// Returns probability of reflection vs transmission at a dielectric interface
+__host__ __device__ float schlickFresnel(float cosTheta, float etaIncident, float etaTransmitted)
+{
+    float r0 = (etaIncident - etaTransmitted) / (etaIncident + etaTransmitted);
     r0 = r0 * r0;
-    float x = 1.0f - cosTheta;
-    return r0 + (1.0f - r0) * powf(x, 5.0f);
+    float oneMinusCos = 1.0f - cosTheta;
+    return r0 + (1.0f - r0) * powf(oneMinusCos, 5.0f);
 }
 
+// Scatter a ray based on material properties
 __host__ __device__ void scatterRay(
     PathSegment& pathSegment,
-    glm::vec3 intersect,
-    glm::vec3 normal,
-    const Material& m,
+    glm::vec3 hitPoint,
+    glm::vec3 surfaceNormal,
+    const Material& material,
     thrust::default_random_engine& rng)
 {
-    glm::vec3 I = glm::normalize(pathSegment.ray.direction);
-    glm::vec3 newDir;
+    glm::vec3 incomingDirection = glm::normalize(pathSegment.ray.direction);
+    glm::vec3 scatteredDirection;
 
-    // Emissive
-    if (m.emittance > 0.0f) {
-        pathSegment.color *= m.color * m.emittance;
+    // Emissive material
+    if (material.emittance > 0.0f)
+    {
+        pathSegment.color *= material.color * material.emittance;
         pathSegment.remainingBounces = 0;
         return;
     }
 
-    // Reflective
-    if (m.hasReflective > 0.0f) {
-        newDir = glm::reflect(I, normal);
-        pathSegment.ray.origin = intersect + 1e-4f * normal;
-        pathSegment.ray.direction = glm::normalize(newDir);
-        pathSegment.color *= m.color;
+    // Reflective material
+    if (material.hasReflective > 0.0f)
+    {
+        scatteredDirection = glm::reflect(incomingDirection, surfaceNormal);
+        pathSegment.ray.origin = hitPoint + 1e-4f * surfaceNormal;
+        pathSegment.ray.direction = glm::normalize(scatteredDirection);
+        pathSegment.color *= material.color;
         pathSegment.remainingBounces--;
         return;
     }
 
-    if (m.hasRefractive > 0.0f) {
-        // Determine enter/exit and set outward normal and indices
-        bool entering = glm::dot(I, normal) < 0.0f;
-        glm::vec3 n = entering ? normal : normal;
+    // Refractive material
+    if (material.hasRefractive > 0.0f)
+    {
+        // Determine if ray is entering or exiting the material
+        bool isEntering = glm::dot(incomingDirection, surfaceNormal) < 0.0f;
+        glm::vec3 outwardNormal = isEntering ? surfaceNormal : -surfaceNormal;
 
-        float etaI = entering ? 1.0f : m.indexOfRefraction;
-        float etaT = entering ? m.indexOfRefraction : 1.0f;
-        float eta = etaI / etaT;
+        float etaIncident = isEntering ? 1.0f : material.indexOfRefraction;
+        float etaTransmitted = isEntering ? material.indexOfRefraction : 1.0f;
+        float etaRatio = etaIncident / etaTransmitted;
 
-        // Fresnel
-        float cosi = glm::clamp(glm::dot(-I, n), 0.0f, 1.0f);
-        float F = schlickFresnel(cosi, etaI, etaT);
+        // Calculate Fresnel reflectance
+        float cosIncident = glm::clamp(glm::dot(-incomingDirection, outwardNormal), 0.0f, 1.0f);
+        float fresnelReflectance = schlickFresnel(cosIncident, etaIncident, etaTransmitted);
 
-        // Candidate directions
-        glm::vec3 dirR = glm::reflect(I, n);
-        glm::vec3 dirT = glm::refract(I, n, eta);
+        // Compute reflection and refraction directions
+        glm::vec3 reflectedDirection = glm::reflect(incomingDirection, outwardNormal);
+        glm::vec3 refractedDirection = glm::refract(incomingDirection, outwardNormal, etaRatio);
 
-        bool doReflect = (glm::length(dirT)*glm::length(dirT) < 1e-12f);
-        if (!doReflect) {
+        // Check for total internal reflection
+        bool shouldReflect = (glm::length(refractedDirection) * glm::length(refractedDirection) < 1e-12f);
+        if (!shouldReflect)
+        {
+            // Use Fresnel to stochastically choose between reflection and refraction
             thrust::uniform_real_distribution<float> u01(0.0f, 1.0f);
-            doReflect = (u01(rng) < F);
+            shouldReflect = (u01(rng) < fresnelReflectance);
         }
 
-        glm::vec3 outDir = doReflect ? dirR : dirT;
+        glm::vec3 finalDirection = shouldReflect ? reflectedDirection : refractedDirection;
 
-        // Beer–Lambert absorption on transmission only
-        if (!doReflect) {
-            float dist = glm::length(intersect - pathSegment.ray.origin);
+        // Apply Beer-Lambert absorption for transmitted rays
+        if (!shouldReflect)
+        {
+            float travelDistance = glm::length(hitPoint - pathSegment.ray.origin);
 
-            glm::vec3 T = glm::clamp(m.color, glm::vec3(1e-6f), glm::vec3(0.999f));
-            glm::vec3 sigmaA = -glm::log(T); // or use m.sigma_a if you have it
-            pathSegment.color *= glm::exp(-sigmaA * dist);
+            // Compute absorption coefficient from material color
+            glm::vec3 transmittance = glm::clamp(material.color, glm::vec3(1e-6f), glm::vec3(0.999f));
+            glm::vec3 absorptionCoefficient = -glm::log(transmittance);
+            pathSegment.color *= glm::exp(-absorptionCoefficient * travelDistance);
         }
 
-        const float bias = 1e-3f;
-        pathSegment.ray.direction = glm::normalize(outDir);
-        pathSegment.ray.origin = intersect + bias * pathSegment.ray.direction;
+        const float rayBias = 1e-3f;
+        pathSegment.ray.direction = glm::normalize(finalDirection);
+        pathSegment.ray.origin = hitPoint + rayBias * pathSegment.ray.direction;
 
         pathSegment.remainingBounces--;
         return;
     }
 
-    // Diffuse
-    newDir = calculateRandomDirectionInHemisphere(normal, rng);
-    pathSegment.ray.origin = intersect + 1e-3f * normal;
-    pathSegment.ray.direction = glm::normalize(newDir);
-    pathSegment.color *= m.color;
+    // Diffuse material: scatter in random hemisphere direction
+    scatteredDirection = calculateRandomDirectionInHemisphere(surfaceNormal, rng);
+    pathSegment.ray.origin = hitPoint + 1e-3f * surfaceNormal;
+    pathSegment.ray.direction = glm::normalize(scatteredDirection);
+    pathSegment.color *= material.color;
     pathSegment.remainingBounces--;
 }
-
-
-
-

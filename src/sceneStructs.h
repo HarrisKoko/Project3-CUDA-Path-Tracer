@@ -70,12 +70,6 @@ struct Material
     float hasRefractive;
     float indexOfRefraction;
     float emittance;
-    struct TextureInfo {
-        std::string filepath;
-        int width = 0, height = 0, channels = 0;
-        unsigned char* data = nullptr;
-    };
-    std::vector<TextureInfo> textures;
 };
 
 struct Camera

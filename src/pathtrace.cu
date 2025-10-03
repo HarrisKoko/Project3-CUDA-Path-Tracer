@@ -9,7 +9,6 @@
 #include <thrust/random.h>
 #include <thrust/remove.h>
 #include <thrust/partition.h>
-//#include <thrust/sort.h>
 
 #include "sceneStructs.h"
 #include "scene.h"
@@ -22,7 +21,7 @@
 #define ERRORCHECK 1
 #define samplesPerPixel 16
 
-// toggles
+// Performance optimization toggles
 #define SORT_MATERIAL_ID 0
 #define STREAM_COMPACTION 0
 
@@ -60,7 +59,6 @@ thrust::default_random_engine makeSeededRandomEngine(int iter, int index, int de
 
 // Kernels
 
-// write image to PBO
 __global__ void sendImageToPBO(uchar4* pbo, glm::ivec2 resolution, int iter, glm::vec3* image)
 {
     int x = (blockIdx.x * blockDim.x) + threadIdx.x;
@@ -82,8 +80,8 @@ __global__ void sendImageToPBO(uchar4* pbo, glm::ivec2 resolution, int iter, glm
         pbo[index].z = color.z;
     }
 }
-// Globals
 
+// Global device memory pointers
 static Scene* hst_scene = NULL;
 static GuiDataContainer* guiData = NULL;
 static glm::vec3* dev_image = NULL;
@@ -92,16 +90,18 @@ static Material* dev_materials = NULL;
 static PathSegment* dev_paths = NULL;
 static ShadeableIntersection* dev_intersections = NULL;
 
+// Mesh data on device
 static glm::vec3* dev_vertices = nullptr;
 static uint32_t* dev_indices = nullptr;
 static glm::vec3* dev_normals = nullptr;
-static int        dev_index_count = 0;
+static int dev_index_count = 0;
 
+// BVH acceleration structure on device
 static BVHNode* dev_bvh = nullptr;
 static glm::uvec3* dev_triTriplets = nullptr;
-static int        dev_triCount = 0;
+static int dev_triCount = 0;
 
-// Functors
+// Functors for thrust operations
 
 struct isRayAlive {
     __host__ __device__
@@ -117,7 +117,7 @@ struct materialsCmp {
     }
 };
 
-// Init
+// Initialization
 
 void InitDataContainer(GuiDataContainer* imGuiData)
 {
@@ -196,8 +196,6 @@ void pathtraceFree()
     checkCUDAError("pathtraceFree");
 }
 
-// Primary ray generation
-
 __global__ void generateRayFromCamera(Camera cam, int iter, int traceDepth, PathSegment* pathSegments, int numSamples)
 {
     int x = (blockIdx.x * blockDim.x) + threadIdx.x;
@@ -237,213 +235,273 @@ __global__ void generateRayFromCamera(Camera cam, int iter, int traceDepth, Path
     segment.ray.direction = glm::normalize(accumulatedDir / float(numSamples));
 }
 
-// Intersections
-
+// Compute ray-scene intersections
 __global__ void computeIntersections(
-    int depth,
-    int num_paths,
+    int currentDepth,
+    int numActivePaths,
     PathSegment* pathSegments,
-    Geom* geoms,
-    int geoms_size,
-    const glm::vec3* vertices,
-    const uint32_t* indices,
-    int index_count,
-    const glm::vec3* normals,
-    const BVHNode* bvh,
-    const glm::uvec3* triTriplets,
-    ShadeableIntersection* intersections)
+    Geom* sceneGeometry,
+    int geometryCount,
+    const glm::vec3* meshVertices,
+    const uint32_t* meshIndices,
+    int totalIndexCount,
+    const glm::vec3* meshNormals,
+    const BVHNode* bvhTree,
+    const glm::uvec3* triangleIndices,
+    ShadeableIntersection* intersectionResults)
 {
-    int path_index = blockIdx.x * blockDim.x + threadIdx.x;
-    if (path_index >= num_paths) return;
+    int pathIndex = blockIdx.x * blockDim.x + threadIdx.x;
+    if (pathIndex >= numActivePaths)
+        return;
 
-    const PathSegment path = pathSegments[path_index];
-    const Ray rayW = path.ray;
+    const PathSegment currentPath = pathSegments[pathIndex];
+    const Ray worldRay = currentPath.ray;
 
-    float t_min_world = FLT_MAX;
-    int   hit_geom_index = -1;
-    glm::vec3 best_normalW(0.0f);
+    // Track closest hit
+    float closestDistance = FLT_MAX;
+    int hitGeometryIndex = -1;
+    glm::vec3 hitNormalWorld(0.0f);
 
-    for (int i = 0; i < geoms_size; ++i) {
-        const Geom& g = geoms[i];
+    // Test ray against each geometry object
+    for (int i = 0; i < geometryCount; ++i)
+    {
+        const Geom& geom = sceneGeometry[i];
 
-        float t_obj = -1.0f;
-        glm::vec3 hitP_obj, n_obj;
-        glm::vec3 thisNormalW;
-        bool outside = true;
+        float hitDistance = -1.0f;
+        glm::vec3 hitPointObject, normalObject;
+        glm::vec3 normalWorld;
+        bool isOutside = true;
 
-        if (g.type == CUBE) {
-            t_obj = boxIntersectionTest(const_cast<Geom&>(g), rayW, hitP_obj, thisNormalW, outside);
-            if (t_obj > 0.f && t_obj < t_min_world) {
-                t_min_world = t_obj;
-                hit_geom_index = i;
-                best_normalW = thisNormalW;
+        if (geom.type == CUBE)
+        {
+            hitDistance = boxIntersectionTest(
+                const_cast<Geom&>(geom),
+                worldRay,
+                hitPointObject,
+                normalWorld,
+                isOutside
+            );
+
+            if (hitDistance > 0.0f && hitDistance < closestDistance)
+            {
+                closestDistance = hitDistance;
+                hitGeometryIndex = i;
+                hitNormalWorld = normalWorld;
             }
         }
-        else if (g.type == SPHERE) {
-            t_obj = sphereIntersectionTest(const_cast<Geom&>(g), rayW, hitP_obj, thisNormalW, outside);
-            if (t_obj > 0.f && t_obj < t_min_world) {
-                t_min_world = t_obj;
-                hit_geom_index = i;
-                best_normalW = thisNormalW;
+        else if (geom.type == SPHERE)
+        {
+            hitDistance = sphereIntersectionTest(
+                const_cast<Geom&>(geom),
+                worldRay,
+                hitPointObject,
+                normalWorld,
+                isOutside
+            );
+
+            if (hitDistance > 0.0f && hitDistance < closestDistance)
+            {
+                closestDistance = hitDistance;
+                hitGeometryIndex = i;
+                hitNormalWorld = normalWorld;
             }
         }
-        else if (g.type == MESH) {
-            Ray rObj;
-            rObj.origin = glm::vec3(g.inverseTransform * glm::vec4(rayW.origin, 1.0f));
-            rObj.direction = glm::normalize(glm::vec3(g.inverseTransform * glm::vec4(rayW.direction, 0.0f)));
+        else if (geom.type == MESH)
+        {
+            // Transform ray to object space
+            Ray objectRay;
+            objectRay.origin = glm::vec3(
+                geom.inverseTransform * glm::vec4(worldRay.origin, 1.0f)
+            );
+            objectRay.direction = glm::normalize(
+                glm::vec3(geom.inverseTransform * glm::vec4(worldRay.direction, 0.0f))
+            );
 
-            float best_t_obj = FLT_MAX;
-            glm::vec3 best_n_obj(0.0f);
+            float closestTriDistance = FLT_MAX;
+            glm::vec3 closestTriNormal(0.0f);
             bool hitMesh = false;
 
-            // Traverse BVH 
-            int stack[64]; int sp = 0; stack[sp++] = 0; // assume root at 0
-            while (sp) {
-                int ni = stack[--sp];
-                BVHNode n = bvh[ni];
+            // Traverse BVH using a stack (no recursion on GPU)
+            int stack[64];
+            int stackPointer = 0;
+            stack[stackPointer++] = 0; // Start at root
 
-                float t0, t1;
-                if (!intersectAABB(rObj, n.box, t0, t1) || t0 > best_t_obj) continue;
+            while (stackPointer > 0)
+            {
+                int nodeIndex = stack[--stackPointer];
+                BVHNode node = bvhTree[nodeIndex];
 
-                if (n.triCount > 0) {
-                    // Leaf
-                    for (int kk = 0; kk < n.triCount; ++kk) {
-                        const glm::uvec3 tri = triTriplets[n.firstTri + kk];
-                        const glm::vec3& v0 = vertices[tri.x];
-                        const glm::vec3& v1 = vertices[tri.y];
-                        const glm::vec3& v2 = vertices[tri.z];
+                // Test against bounding box
+                float tEntry, tExit;
+                bool hitsBox = intersectAABB(objectRay, node.box, tEntry, tExit);
 
-                        float tTri, u, v;
-                        glm::vec3 nFace;
-                        if (intersectTriangleBarycentric(rObj, v0, v1, v2, tTri, u, v, nFace)) {
-                            if (tTri > 0.0f && tTri < best_t_obj) {
-                                best_t_obj = tTri;
+                if (!hitsBox || tEntry > closestTriDistance)
+                    continue;
+
+                if (node.triCount > 0)
+                {
+                    // Leaf node: test triangles
+                    for (int k = 0; k < node.triCount; ++k)
+                    {
+                        const glm::uvec3 tri = triangleIndices[node.firstTri + k];
+                        const glm::vec3& v0 = meshVertices[tri.x];
+                        const glm::vec3& v1 = meshVertices[tri.y];
+                        const glm::vec3& v2 = meshVertices[tri.z];
+
+                        float triDistance;
+                        float baryU, baryV;
+                        glm::vec3 faceNormal;
+
+                        if (intersectTriangleBarycentric(objectRay, v0, v1, v2, triDistance, baryU, baryV, faceNormal))
+                        {
+                            if (triDistance > 0.0f && triDistance < closestTriDistance)
+                            {
+                                closestTriDistance = triDistance;
                                 hitMesh = true;
 
-                                // Interpolate normal
-                                glm::vec3 nObj;
-                                if (normals) {
-                                    float w = 1.0f - u - v;
-                                    nObj = glm::normalize(w * normals[tri.x] + u * normals[tri.y] + v * normals[tri.z]);
+                                // Interpolate smooth normal using barycentric coordinates
+                                if (meshNormals)
+                                {
+                                    float baryW = 1.0f - baryU - baryV;
+                                    closestTriNormal = glm::normalize(
+                                        baryW * meshNormals[tri.x] +
+                                        baryU * meshNormals[tri.y] +
+                                        baryV * meshNormals[tri.z]
+                                    );
                                 }
-                                else {
-                                    nObj = glm::normalize(nFace);
+                                else
+                                {
+                                    closestTriNormal = glm::normalize(faceNormal);
                                 }
-                                best_n_obj = nObj;
                             }
                         }
                     }
                 }
-                else {
-                    // Internal: push children
-                    if (n.right >= 0) stack[sp++] = n.right;
-                    if (n.left >= 0) stack[sp++] = n.left;
+                else
+                {
+                    // Internal node: add children to stack
+                    if (node.right >= 0) stack[stackPointer++] = node.right;
+                    if (node.left >= 0) stack[stackPointer++] = node.left;
                 }
             }
 
-            // If this mesh was hit, convert to world space and compete globally
-            if (hitMesh) {
-                const glm::vec3 hitP_obj = rObj.origin + best_t_obj * rObj.direction;
-                const glm::vec3 hitP_world = glm::vec3(g.transform * glm::vec4(hitP_obj, 1.0f));
+            // Convert mesh hit to world space and compare with other geometry
+            if (hitMesh)
+            {
+                const glm::vec3 hitPointObject = objectRay.origin + closestTriDistance * objectRay.direction;
+                const glm::vec3 hitPointWorld = glm::vec3(geom.transform * glm::vec4(hitPointObject, 1.0f));
 
-                // World-space t along the (normalized) world ray
-                const float t_world = glm::dot(hitP_world - rayW.origin, glm::normalize(rayW.direction));
+                // Calculate world-space distance along ray
+                const float worldDistance = glm::dot(hitPointWorld - worldRay.origin, glm::normalize(worldRay.direction));
 
-                if (t_world > 0.0f && t_world < t_min_world) {
-                    t_min_world = t_world;
-                    hit_geom_index = i;
-                    best_normalW = glm::normalize(glm::vec3(g.invTranspose * glm::vec4(best_n_obj, 0.0f)));
+                if (worldDistance > 0.0f && worldDistance < closestDistance)
+                {
+                    closestDistance = worldDistance;
+                    hitGeometryIndex = i;
+                    hitNormalWorld = glm::normalize(glm::vec3(geom.invTranspose * glm::vec4(closestTriNormal, 0.0f)));
                 }
             }
         }
-
     }
 
-    if (hit_geom_index < 0) {
-        intersections[path_index].t = -1.0f;
+    // Store results
+    if (hitGeometryIndex < 0)
+    {
+        intersectionResults[pathIndex].t = -1.0f;
     }
-    else {
-        intersections[path_index].t = t_min_world;
-        intersections[path_index].materialId = geoms[hit_geom_index].materialid;
-        intersections[path_index].surfaceNormal = best_normalW;
+    else
+    {
+        intersectionResults[pathIndex].t = closestDistance;
+        intersectionResults[pathIndex].materialId = sceneGeometry[hitGeometryIndex].materialid;
+        intersectionResults[pathIndex].surfaceNormal = hitNormalWorld;
     }
 }
 
-// Shading
-
+// Shade materials and scatter rays
 __global__ void shadeMaterial(
-    int iter,
-    int num_paths,
-    ShadeableIntersection* shadeableIntersections,
+    int currentIteration,
+    int numActivePaths,
+    ShadeableIntersection* intersections,
     PathSegment* pathSegments,
     Material* materials,
-    int bounces)
+    int bounceCount)
 {
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx >= num_paths || pathSegments[idx].remainingBounces <= 0) return;
+    int pathIndex = blockIdx.x * blockDim.x + threadIdx.x;
+    if (pathIndex >= numActivePaths || pathSegments[pathIndex].remainingBounces <= 0)
+        return;
 
-    ShadeableIntersection intersection = shadeableIntersections[idx];
+    ShadeableIntersection intersection = intersections[pathIndex];
 
-    if (intersection.t > 0.0f) {
-        thrust::default_random_engine rng = makeSeededRandomEngine(iter, idx, bounces);
+    if (intersection.t > 0.0f)
+    {
+        // Valid hit: scatter ray based on material
+        thrust::default_random_engine rng = makeSeededRandomEngine(currentIteration, pathIndex, bounceCount);
         Material material = materials[intersection.materialId];
 
-        glm::vec3 hitPoint = pathSegments[idx].ray.origin +
-            intersection.t * pathSegments[idx].ray.direction;
+        glm::vec3 hitPoint = pathSegments[pathIndex].ray.origin +
+            intersection.t * pathSegments[pathIndex].ray.direction;
 
-        scatterRay(pathSegments[idx], hitPoint, intersection.surfaceNormal, material, rng);
+        scatterRay(pathSegments[pathIndex], hitPoint, intersection.surfaceNormal, material, rng);
     }
-    else {
-        pathSegments[idx].color = glm::vec3(0.0f);
-        pathSegments[idx].remainingBounces = 0;
-    }
-}
-
-// Final gather
-
-__global__ void finalGather(int nPaths, glm::vec3* image, PathSegment* iterationPaths)
-{
-    int index = (blockIdx.x * blockDim.x) + threadIdx.x;
-
-    if (index < nPaths)
+    else
     {
-        PathSegment iterationPath = iterationPaths[index];
-        image[iterationPath.pixelIndex] += iterationPath.color;
+        // No hit: terminate ray
+        pathSegments[pathIndex].color = glm::vec3(0.0f);
+        pathSegments[pathIndex].remainingBounces = 0;
     }
 }
 
-// Main pathtrace loop
-
-void pathtrace(uchar4* pbo, int frame, int iter)
+// Accumulate path colors into final image
+__global__ void finalGather(int numPaths, glm::vec3* image, PathSegment* paths)
 {
-    const int traceDepth = hst_scene->state.traceDepth;
-    const Camera& cam = hst_scene->state.camera;
-    const int pixelcount = cam.resolution.x * cam.resolution.y;
+    int pathIndex = (blockIdx.x * blockDim.x) + threadIdx.x;
 
-    const dim3 blockSize2d(8, 8);
-    const dim3 blocksPerGrid2d(
-        (cam.resolution.x + blockSize2d.x - 1) / blockSize2d.x,
-        (cam.resolution.y + blockSize2d.y - 1) / blockSize2d.y);
+    if (pathIndex < numPaths)
+    {
+        PathSegment path = paths[pathIndex];
+        image[path.pixelIndex] += path.color;
+    }
+}
 
-    const int blockSize1d = 128;
+// Main path tracing loop
+void pathtrace(uchar4* pbo, int frame, int currentIteration)
+{
+    const int maxBounces = hst_scene->state.traceDepth;
+    const Camera& camera = hst_scene->state.camera;
+    const int totalPixels = camera.resolution.x * camera.resolution.y;
 
-    generateRayFromCamera << <blocksPerGrid2d, blockSize2d >> > (cam, iter, traceDepth, dev_paths, samplesPerPixel);
+    const dim3 blockSize2D(8, 8);
+    const dim3 numBlocks2D(
+        (camera.resolution.x + blockSize2D.x - 1) / blockSize2D.x,
+        (camera.resolution.y + blockSize2D.y - 1) / blockSize2D.y
+    );
+
+    const int blockSize1D = 128;
+
+    // Generate camera rays
+    generateRayFromCamera << <numBlocks2D, blockSize2D >> > (
+        camera, currentIteration, maxBounces, dev_paths, samplesPerPixel
+        );
     checkCUDAError("generate camera ray");
 
-    int depth = 0;
-    PathSegment* dev_path_end = dev_paths + pixelcount;
-    int num_paths = dev_path_end - dev_paths;
+    int currentDepth = 0;
+    PathSegment* pathsEnd = dev_paths + totalPixels;
+    int numActivePaths = pathsEnd - dev_paths;
 
-    bool iterationComplete = false;
-    int bounces = 0;
-    while (!iterationComplete)
+    bool tracingComplete = false;
+    int bounceCount = 0;
+
+    while (!tracingComplete)
     {
-        cudaMemset(dev_intersections, 0, pixelcount * sizeof(ShadeableIntersection));
+        // Clear intersection data
+        cudaMemset(dev_intersections, 0, totalPixels * sizeof(ShadeableIntersection));
 
-        dim3 numblocksPathSegmentTracing = (num_paths + blockSize1d - 1) / blockSize1d;
-        computeIntersections << <numblocksPathSegmentTracing, blockSize1d >> > (
-            depth,
-            num_paths,
+        dim3 numBlocks1D = (numActivePaths + blockSize1D - 1) / blockSize1D;
+
+        // Find intersections
+        computeIntersections << <numBlocks1D, blockSize1D >> > (
+            currentDepth,
+            numActivePaths,
             dev_paths,
             dev_geoms,
             (int)hst_scene->geoms.size(),
@@ -453,58 +511,77 @@ void pathtrace(uchar4* pbo, int frame, int iter)
             dev_normals,
             dev_bvh,
             dev_triTriplets,
-            dev_intersections);
+            dev_intersections
+            );
 
         checkCUDAError("trace one bounce");
         cudaDeviceSynchronize();
-        depth++;
+        currentDepth++;
 
 #if SORT_MATERIAL_ID
-        thrust::sort_by_key(thrust::device,
-            dev_intersections, dev_intersections + num_paths,
+        // Sort rays by material for better coherence
+        thrust::sort_by_key(
+            thrust::device,
+            dev_intersections,
+            dev_intersections + numActivePaths,
             dev_paths,
-            materialsCmp());
+            materialsCmp()
+        );
 #endif
 
-        shadeMaterial << <numblocksPathSegmentTracing, blockSize1d >> > (
-            iter,
-            num_paths,
+        // Shade materials and scatter rays
+        shadeMaterial << <numBlocks1D, blockSize1D >> > (
+            currentIteration,
+            numActivePaths,
             dev_intersections,
             dev_paths,
             dev_materials,
-            bounces);
+            bounceCount
+            );
         checkCUDAError("shade");
 
 #if STREAM_COMPACTION
-        num_paths = thrust::partition(
+        // Remove terminated rays
+        numActivePaths = thrust::partition(
             thrust::device,
             dev_paths,
-            dev_paths + num_paths,
-            isRayAlive()) - dev_paths;
+            dev_paths + numActivePaths,
+            isRayAlive()
+        ) - dev_paths;
 #endif
 
-        if (depth >= traceDepth || num_paths == 0) {
-            iterationComplete = true;
+        // Check termination conditions
+        if (currentDepth >= maxBounces || numActivePaths == 0)
+        {
+            tracingComplete = true;
         }
-        bounces++;
+        bounceCount++;
 
-        if (guiData != NULL) {
-            guiData->TracedDepth = depth;
+        if (guiData != NULL)
+        {
+            guiData->TracedDepth = currentDepth;
         }
     }
 
 #if STREAM_COMPACTION
-    num_paths = (int)(dev_path_end - dev_paths);
+    numActivePaths = (int)(pathsEnd - dev_paths);
 #endif
 
-    dim3 numBlocksPixels = (num_paths + blockSize1d - 1) / blockSize1d;
-    finalGather << <numBlocksPixels, blockSize1d >> > (num_paths, dev_image, dev_paths);
+    // Accumulate path results into image
+    dim3 numBlocksForGather = (numActivePaths + blockSize1D - 1) / blockSize1D;
+    finalGather << <numBlocksForGather, blockSize1D >> > (numActivePaths, dev_image, dev_paths);
     checkCUDAError("finalGather");
 
-    sendImageToPBO << <blocksPerGrid2d, blockSize2d >> > (pbo, cam.resolution, iter, dev_image);
+    // Send image to display
+    sendImageToPBO << <numBlocks2D, blockSize2D >> > (pbo, camera.resolution, currentIteration, dev_image);
 
-    cudaMemcpy(hst_scene->state.image.data(), dev_image,
-        pixelcount * sizeof(glm::vec3), cudaMemcpyDeviceToHost);
+    // Copy image back to host
+    cudaMemcpy(
+        hst_scene->state.image.data(),
+        dev_image,
+        totalPixels * sizeof(glm::vec3),
+        cudaMemcpyDeviceToHost
+    );
 
     checkCUDAError("pathtrace");
 }
