@@ -1,0 +1,11 @@
+Model Information:
+* title:	Rubber duck
+* source:	https://sketchfab.com/3d-models/rubber-duck-8e24a6d4d15c4c62ae053cfa67d99e67
+* author:	IR4jeckkkkkk (https://sketchfab.com/IR4jeckkkkkk)
+
+Model License:
+* license type:	CC-BY-4.0 (http://creativecommons.org/licenses/by/4.0/)
+* requirements:	Author must be credited. Commercial use is allowed.
+
+If you use this 3D model in your project be sure to copy paste this credit wherever you share it:
+This work is based on "Rubber duck" (https://sketchfab.com/3d-models/rubber-duck-8e24a6d4d15c4c62ae053cfa67d99e67) by IR4jeckkkkkk (https://sketchfab.com/IR4jeckkkkkk) licensed under CC-BY-4.0 (http://creativecommons.org/licenses/by/4.0/)

@@ -321,7 +321,7 @@ __global__ void computeIntersections(
             glm::vec3 closestTriNormal(0.0f);
             bool hitMesh = false;
 
-            // Traverse BVH using a stack (no recursion on GPU)
+            // Traverse BVH using a stack
             int stack[64];
             int stackPointer = 0;
             stack[stackPointer++] = 0; // Start at root

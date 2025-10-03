@@ -1,0 +1,287 @@
+{
+    "Materials": {
+        "light": {
+            "TYPE": "Emitting",
+            "RGB": [ 1.0, 1.0, 1.0 ],
+            "EMITTANCE": 5.0
+        },
+        "ceiling_light": {
+            "TYPE": "Emitting",
+            "RGB": [ 1.0, 1.0, 1.0 ],
+            "EMITTANCE": 8.0
+        },
+        "warm_light": {
+            "TYPE": "Emitting",
+            "RGB": [ 1.0, 0.8, 0.6 ],
+            "EMITTANCE": 5.0
+        },
+        "cool_light": {
+            "TYPE": "Emitting",
+            "RGB": [ 0.8, 0.9, 1.0 ],
+            "EMITTANCE": 5.0
+        },
+        "diffuse_grass": {
+            "TYPE": "Diffuse",
+            "RGB": [ 0.5, 0.85, 0.2 ]
+        },
+        "diffuse_sky": {
+            "TYPE": "Diffuse",
+            "RGB": [ 0.6, 0.8, 0.95 ]
+        },
+        "diffuse_white": {
+            "TYPE": "Diffuse",
+            "RGB": [ 0.98, 0.98, 0.98 ]
+        },
+        "diffuse_cream": {
+            "TYPE": "Diffuse",
+            "RGB": [ 0.95, 0.92, 0.85 ]
+        },
+        "diffuse_slate": {
+            "TYPE": "Diffuse",
+            "RGB": [ 0.45, 0.50, 0.55 ]
+        },
+        "diffuse_blue": {
+            "TYPE": "Diffuse",
+            "RGB": [ 0.35, 0.55, 0.85 ]
+        },
+        "diffuse_yellow": {
+            "TYPE": "Diffuse",
+            "RGB": [ 0.85, 0.85, 0.35 ]
+        },
+        "diffuse_purple": {
+            "TYPE": "Diffuse",
+            "RGB": [ 0.65, 0.35, 0.85 ]
+        },
+        "diffuse_orange": {
+            "TYPE": "Diffuse",
+            "RGB": [ 0.90, 0.50, 0.20 ]
+        },
+        "specular_white": {
+            "TYPE": "Specular",
+            "RGB": [ 0.98, 0.98, 0.98 ]
+        },
+        "specular_gold": {
+            "TYPE": "Specular",
+            "RGB": [ 1.0, 0.84, 0.0 ]
+        },
+        "specular_copper": {
+            "TYPE": "Specular",
+            "RGB": [ 0.95, 0.64, 0.54 ]
+        },
+        "glass": {
+            "TYPE": "Specular",
+            "RGB": [ 1.0, 1.0, 1.0 ],
+            "HAS_REFRACTIVE": 1,
+            "IOR": 1.5
+        },
+        "water": {
+            "TYPE": "Specular",
+            "RGB": [ 0.9, 0.95, 1.0 ],
+            "HAS_REFRACTIVE": 1,
+            "IOR": 1.33
+        },
+        "tile": {
+            "TYPE": "Diffuse",
+            "RGB": [ 0.7, 0.8, 0.9 ]
+        },
+        "porcelain": {
+            "TYPE": "Diffuse",
+            "RGB": [ 0.99, 0.99, 0.99 ]
+        }
+    },  
+    "Camera": {
+        "RES": [ 1200, 800 ],
+        "FOVY": 50.0,
+        "ITERATIONS": 5000,
+        "DEPTH": 8,
+        "FILE": "bathroom_scene",
+        "EYE": [ 3.0, 2.0, 5.0 ],
+        "LOOKAT": [ -5.0, 4.0, -6.0 ],
+        "UP": [ 0.0, 1.0, 0.0 ]
+    },
+    "Objects": [
+        {
+            "TYPE": "cube",
+            "MATERIAL": "ceiling_light",
+            "TRANS": [ 0.0, 11.0, 0.0 ],
+            "ROTAT": [ 0.0, 0.0, 0.0 ],
+            "SCALE": [ 3.0, 0.2, 3.0 ]
+        },
+        {
+            "TYPE": "cube",
+            "MATERIAL": "warm_light",
+            "TRANS": [ -6.0, 8.0, -6.0 ],
+            "ROTAT": [ 0.0, 0.0, 0.0 ],
+            "SCALE": [ 1.5, 0.2, 1.5 ]
+        },
+        {
+            "TYPE": "cube",
+            "MATERIAL": "cool_light",
+            "TRANS": [ 6.0, 8.0, -2.0 ],
+            "ROTAT": [ 0.0, 0.0, 0.0 ],
+            "SCALE": [ 1.5, 0.2, 1.5 ]
+        },
+        {
+            "TYPE": "cube",
+            "MATERIAL": "tile",
+            "TRANS": [ 0.0, 0.0, 0.0 ],
+            "ROTAT": [ 0.0, 0.0, 0.0 ],
+            "SCALE": [ 14.0, 0.01, 14.0 ]
+        },
+        {
+            "TYPE": "cube",
+            "MATERIAL": "diffuse_white",
+            "TRANS": [ 0.0, 11.0, 0.0 ],
+            "ROTAT": [ 0.0, 0.0, 90.0 ],
+            "SCALE": [ 0.01, 14.0, 14.0 ]
+        },
+        {
+            "TYPE": "cube",
+            "MATERIAL": "diffuse_cream",
+            "TRANS": [ 0.0, 5.5, -7.0 ],
+            "ROTAT": [ 0.0, 90.0, 0.0 ],
+            "SCALE": [ 0.01, 11.0, 14.0 ]
+        },
+        {
+            "TYPE": "cube",
+            "MATERIAL": "diffuse_cream",
+            "TRANS": [ -7.0, 5.5, 0.0 ],
+            "ROTAT": [ 0.0, 0.0, 0.0 ],
+            "SCALE": [ 0.01, 11.0, 14.0 ]
+        },
+        {
+            "TYPE": "cube",
+            "MATERIAL": "diffuse_cream",
+            "TRANS": [ 7.0, 5.5, 0.0 ],
+            "ROTAT": [ 0.0, 0.0, 0.0 ],
+            "SCALE": [ 0.01, 11.0, 14.0 ]
+        },
+        {
+            "TYPE": "cube",
+            "MATERIAL": "porcelain",
+            "TRANS": [ 0.0, 1.0, 0.0 ],
+            "ROTAT": [ 0.0, 0.0, 0.0 ],
+            "SCALE": [ 3.0, 1.0, 5.0 ]
+        },
+        {
+            "TYPE": "cube",
+            "MATERIAL": "water",
+            "TRANS": [ 0.0, 1.8, 0.0 ],
+            "ROTAT": [ 0.0, 0.0, 0.0 ],
+            "SCALE": [ 2.7, 0.6, 4.7 ]
+        },
+        {
+            "TYPE": "gltf",
+            "FILE": "../scenes/rubber_duck/scene.gltf",
+            "MATERIAL": "diffuse_yellow",
+            "TRANS": [ 0.0, 2.0, 0.5 ],
+            "ROTAT": [ 90.0, 0.0, -90.0 ],
+            "SCALE": [ 1.0, 1.0, 1.0 ]
+        },
+        {
+            "TYPE": "sphere",
+            "MATERIAL": "diffuse_blue",
+            "TRANS": [ -2.0, 0.5, 2.5 ],
+            "ROTAT": [ 0.0, 0.0, 0.0 ],
+            "SCALE": [ 0.5, 0.5, 0.5 ]
+        },
+        {
+            "TYPE": "sphere",
+            "MATERIAL": "diffuse_white",
+            "TRANS": [ 2.5, 0.4, 3.0 ],
+            "ROTAT": [ 0.0, 0.0, 0.0 ],
+            "SCALE": [ 0.4, 0.4, 0.4 ]
+        },
+        {
+            "TYPE": "cube",
+            "MATERIAL": "diffuse_white",
+            "TRANS": [ -5.0, 1.5, -5.0 ],
+            "ROTAT": [ 0.0, 0.0, 0.0 ],
+            "SCALE": [ 1.5, 3.0, 1.2 ]
+        },
+        {
+            "TYPE": "sphere",
+            "MATERIAL": "specular_white",
+            "TRANS": [ -5.0, 3.2, -6.0 ],
+            "ROTAT": [ 0.0, 0.0, 0.0 ],
+            "SCALE": [ 0.6, 0.6, 0.6 ]
+        },
+        {
+            "TYPE": "cube",
+            "MATERIAL": "porcelain",
+            "TRANS": [ 5.0, 1.0, -5.5 ],
+            "ROTAT": [ 0.0, 0.0, 0.0 ],
+            "SCALE": [ 1.2, 2.0, 0.8 ]
+        },
+        {
+            "TYPE": "sphere",
+            "MATERIAL": "porcelain",
+            "TRANS": [ 5.0, 2.2, -5.5 ],
+            "ROTAT": [ 0.0, 0.0, 0.0 ],
+            "SCALE": [ 0.8, 0.6, 0.7 ]
+        },
+        {
+            "TYPE": "cube",
+            "MATERIAL": "diffuse_slate",
+            "TRANS": [ -1.5, 4.0, -6.5 ],
+            "ROTAT": [ 0.0, 0.0, 0.0 ],
+            "SCALE": [ 2.0, 2.5, 0.2 ]
+        },
+        {
+            "TYPE": "cube",
+            "MATERIAL": "glass",
+            "TRANS": [ -1.5, 5.5, -6.5 ],
+            "ROTAT": [ 0.0, 0.0, 0.0 ],
+            "SCALE": [ 1.8, 1.0, 0.1 ]
+        },
+        {
+            "TYPE": "cube",
+            "MATERIAL": "diffuse_orange",
+            "TRANS": [ 2.5, 0.8, -6.5 ],
+            "ROTAT": [ 0.0, 0.0, 0.0 ],
+            "SCALE": [ 1.5, 1.5, 0.3 ]
+        },
+        {
+            "TYPE": "cube",
+            "MATERIAL": "diffuse_cream",
+            "TRANS": [ 2.5, 1.7, -6.5 ],
+            "ROTAT": [ 0.0, 0.0, 0.0 ],
+            "SCALE": [ 0.3, 0.15, 0.3 ]
+        },
+        {
+            "TYPE": "sphere",
+            "MATERIAL": "diffuse_purple",
+            "TRANS": [ 2.0, 1.8, -6.5 ],
+            "ROTAT": [ 0.0, 0.0, 0.0 ],
+            "SCALE": [ 0.15, 0.15, 0.15 ]
+        },
+        {
+            "TYPE": "sphere",
+            "MATERIAL": "diffuse_blue",
+            "TRANS": [ 3.0, 1.8, -6.5 ],
+            "ROTAT": [ 0.0, 0.0, 0.0 ],
+            "SCALE": [ 0.15, 0.15, 0.15 ]
+        },
+        {
+            "TYPE": "cube",
+            "MATERIAL": "diffuse_blue",
+            "TRANS": [ -4.0, 2.5, -6.5 ],
+            "ROTAT": [ 0.0, 0.0, 0.0 ],
+            "SCALE": [ 1.0, 2.0, 0.2 ]
+        },
+        {
+            "TYPE": "cube",
+            "MATERIAL": "diffuse_yellow",
+            "TRANS": [ 4.5, 3.5, -6.5 ],
+            "ROTAT": [ 0.0, 0.0, 0.0 ],
+            "SCALE": [ 0.8, 1.5, 0.2 ]
+        },
+        {
+            "TYPE": "sphere",
+            "MATERIAL": "diffuse_orange",
+            "TRANS": [ -6.0, 1.5, -6.0 ],
+            "ROTAT": [ 0.0, 0.0, 0.0 ],
+            "SCALE": [ 0.4, 0.4, 0.4 ]
+        }
+    ]
+}
