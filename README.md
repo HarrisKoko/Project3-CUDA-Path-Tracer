@@ -107,11 +107,15 @@ The BVH provides substantial performance improvements for mesh rendering. Withou
 
 The BVH is constructed once on the CPU and uploaded to GPU memory, where it remains static throughout rendering. This makes it well-suited for scenes with static geometry, though dynamic scenes would require rebuilding or refitting the structure each frame.
 
-### Stochastic Sampled Antialiasing
+### Stochastic Sampled Antialiasing (SAA)
 
 Aliasing produces jagged edges when a single ray per pixel either hits or misses geometry at boundaries. Stochastic antialiasing addresses this by casting multiple rays per pixel with random jitter, then averaging the results. Each ray is offset by a small random amount within the pixel's area, sampling different points. This softens sharp transitions into smooth gradients, reducing the staircase effect along edges. The randomness distributes sampling error as noise that diminishes with more samples, rather than creating regular patterns that would introduce new artifacts.
 
-![noSAA](img/noSAA.png) ![SAA](img/SAA.png)
+No SAA
+![noSAA](img/noSAA.png) 
+
+With SAA
+![SAA](img/SAA.png)
 
 ### Stream Compaction
 

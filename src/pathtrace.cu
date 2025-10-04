@@ -23,7 +23,7 @@
 
 // Performance optimization toggles
 #define SORT_MATERIAL_ID 0
-#define STREAM_COMPACTION 0
+#define STREAM_COMPACTION 1
 
 #define FILENAME (strrchr(__FILE__, '/') ? strrchr(__FILE__, '/') + 1 : __FILE__)
 #define checkCUDAError(msg) checkCUDAErrorFn(msg, FILENAME, __LINE__)
