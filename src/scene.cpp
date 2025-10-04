@@ -190,7 +190,7 @@ void Scene::buildBVH()
     };
 
     bvhNodes.clear();
-    bvhNodes.reserve(triIndexTriplets.size() * 2); // Reserve space for worst case
+    bvhNodes.reserve(triIndexTriplets.size() * 2); // Worst case
 
     // Create root node
     const int rootIndex = (int)bvhNodes.size();
@@ -201,7 +201,7 @@ void Scene::buildBVH()
 
     const int maxTrianglesPerLeaf = 8;
 
-    // Lambda function to compute bounds for a range of triangles
+    // Function to compute bounds for a range of triangles
     auto computeRangeBounds = [&](int start, int count, AABB& outBounds, AABB& outCentroidBox)
         {
             AABB triangleBounds, centroidBounds;
@@ -307,11 +307,11 @@ void Scene::buildBVH()
 
         int leftChildCount = leftPointer - task.startIndex;
 
-        // Handle degenerate case where all triangles go to one side
+        // Handle case where all triangles go to one side
         if (leftChildCount == 0 || leftChildCount == task.triangleCount)
             leftChildCount = task.triangleCount / 2;
 
-        // Push child tasks (right first so left is processed next)
+        // Push child tasks (right first)
         taskStack.push_back({
             task.startIndex + leftChildCount,
             task.triangleCount - leftChildCount,
@@ -378,7 +378,7 @@ void Scene::loadFromGLTF(const std::string& gltfFilePath)
                 vertices.emplace_back(position[0], position[1], position[2]);
             }
 
-            // Load vertex normals (if available)
+            // Load vertex normals
             auto normalIterator = primitive.attributes.find("NORMAL");
             if (normalIterator != primitive.attributes.end())
             {
@@ -401,7 +401,7 @@ void Scene::loadFromGLTF(const std::string& gltfFilePath)
             }
             else
             {
-                // Use default up-facing normals if none provided
+                // Use default up facing normals if none provided
                 normals.resize(vertices.size(), glm::vec3(0, 1, 0));
             }
 
@@ -419,7 +419,7 @@ void Scene::loadFromGLTF(const std::string& gltfFilePath)
 
                 indices.resize(baseIndexPosition + indexAccessor.count);
 
-                // Helper to read different index types
+                // Helper to read different types of ints
                 auto readIndex = [&](size_t k) -> uint32_t
                     {
                         switch (indexAccessor.componentType)
@@ -466,7 +466,7 @@ void Scene::loadFromGLTF(const std::string& gltfFilePath)
                 {
                     int textureIndex = gltfMaterial.pbrMetallicRoughness.baseColorTexture.index;
                     int imageIndex = model.textures[textureIndex].source;
-                    newMaterial.color = glm::vec3(1); // Will be replaced by sampled texture
+                    newMaterial.color = glm::vec3(1);
                     // TODO: Store material-to-texture mapping
                 }
             }
@@ -501,6 +501,5 @@ void Scene::loadFromGLTF(const std::string& gltfFilePath)
 
         << std::endl;
 
-    // Build BVH acceleration structure for raytracing
     buildBVH();
 }

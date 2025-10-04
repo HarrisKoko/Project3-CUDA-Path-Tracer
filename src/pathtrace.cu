@@ -391,7 +391,7 @@ __global__ void computeIntersections(
                 const glm::vec3 hitPointObject = objectRay.origin + closestTriDistance * objectRay.direction;
                 const glm::vec3 hitPointWorld = glm::vec3(geom.transform * glm::vec4(hitPointObject, 1.0f));
 
-                // Calculate world-space distance along ray
+                // Calculate world space distance along ray
                 const float worldDistance = glm::dot(hitPointWorld - worldRay.origin, glm::normalize(worldRay.direction));
 
                 if (worldDistance > 0.0f && worldDistance < closestDistance)

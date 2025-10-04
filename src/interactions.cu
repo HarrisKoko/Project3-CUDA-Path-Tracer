@@ -70,7 +70,6 @@ __host__ __device__ void scatterRay(
     }
 
     // Reflective material
-    // Refractive material
     if (material.hasRefractive > 0.0f)
     {
         if (abs(material.indexOfRefraction - 1.0f) < 0.001f)
@@ -87,7 +86,6 @@ __host__ __device__ void scatterRay(
         }
     }
 
-        // ... rest of your existing refractive code stays the same
 
     // Refractive material
     if (material.hasRefractive > 0.0f)
