@@ -12,14 +12,14 @@ CUDA Path Tracer
 This project is a physically based Monte Carlo path tracer implemented in CUDA. It simulates global illumination by tracing rays through a scene, recursively scattering and absorbing light to approximate the rendering equation. The focus of this renderer is on leveraging GPU parallelism to achieve realistic images at interactive to near-interactive speeds. This enables efficient and physically realistic rendering of scenes. 
 
 This path tracer supports:
-*Light Transport according Diffuse, reflective, and refractive materials.
-*Intersection handling for spheres, boxes, and triangles.
-*GTLF Mesh loading for creation of complex scenes.
-*BVH acceleration structure for efficient ray–scene intersection.
-*Cosine weighted hemisphere sampling.
-*Stochastic sampled antialiasing.
-*Stream compaction to remove terminated rays and improve warp coherence.
-*Sorting of material types in memory to reduce GPU memory lookups.
+1. Light Transport according Diffuse, reflective, and refractive materials.
+2. Intersection handling for spheres, boxes, and triangles.
+3. GTLF Mesh loading for creation of complex scenes.
+4. BVH acceleration structure for efficient ray–scene intersection.
+5. Cosine weighted hemisphere sampling.
+6. Stochastic sampled antialiasing.
+7. Stream compaction to remove terminated rays and improve warp coherence.
+8. Sorting of material types in memory to reduce GPU memory lookups.
 
 RESULTS
 ================
@@ -69,7 +69,10 @@ The path tracer implements intersection tests for three primitive types: spheres
 Sphere intersection relies on the analytic solution to the ray-sphere equation. The ray is first transformed into the sphere's object space using the inverse transformation matrix, reducing the problem to intersecting with a unit sphere centered at the origin. A quadratic equation is formed by substituting the ray equation into the implicit sphere surface equation. The discriminant determines whether an intersection exists—if negative, the ray misses entirely. When valid, the quadratic yields two roots representing potential hit points. The code selects the appropriate root based on whether the ray hits from outside or inside the sphere, then transforms both the intersection point and surface normal back to world space.
 
 **Boxes:**
-Box intersection uses the slab method, which treats an axis-aligned box as the intersection of three pairs of parallel planes. For each coordinate axis, the algorithm computes where the ray enters and exits that pair of slabs. The final intersection interval is the overlap of all three axis intervals. An intersection exists if this interval is valid. To handle arbitrarily oriented and scaled boxes, rays are transformed into object space where the box becomes axis-aligned, then the results are transformed back to world space.
+Box intersection uses the slab method, treating the box as three pairs of parallel planes (one pair per axis). The algorithm computes where the ray enters and exits each pair of slabs, then finds where all three intervals overlap. An intersection exists if this final interval is valid (tmax ≥ tmin and tmax > 0).
+For arbitrarily oriented boxes, the implementation transforms rays into object space where the box becomes axis-aligned with sides at ±0.5, performs the slab test iteratively for each axis, then transforms the intersection point and normal back to world space.
+
+For axis-aligned bounding boxes (AABBs) used in the BVH, a streamlined version computes all three slab tests simultaneously without transformation. It inverts the ray direction once, calculates entry/exit points for all axes, and returns the overlapping interval directly. This optimized AABB test is critical for BVH traversal performance since it's called frequently during tree traversal.
 
 **Triangles:**
 Triangle intersection employs the Möller-Trumbore algorithm, which computes the hit point and barycentric coordinates in a single pass. The method solves for the ray parameter and barycentric coordinates simultaneously through a series of dot and cross products. Built-in early rejection tests ensure the ray only intersects the triangle's front face and that the hit point lies within the triangle's bounds. The barycentric coordinates are later used for interpolating vertex normals across the triangle's surface.
@@ -81,7 +84,7 @@ Triangle intersection employs the Möller-Trumbore algorithm, which computes the
 
 The path tracer supports loading complex geometry from GLTF files, extending the renderer beyond simple primitives. GLTF (GL Transmission Format) is a standard 3D file format that stores mesh data, materials, and scene hierarchies in a compact structure suitable for GPU rendering.
 
-The implementation uses the TinyGLTF library to parse GLTF files. For each mesh in the model, the loader extracts vertex positions, normals, and triangle indices from the file's buffer data. GLTF organizes this information through a series of accessors and buffer views, which the loader traverses to reconstruct the geometry. Since GLTF supports multiple data types for indices (unsigned byte, short, or int), the code includes type detection to handle each format correctly.
+The implementation uses the TinyGLTF library to parse GLTF files. For each mesh in the model, the loader extracts vertex positions, normals, and triangle indices from the file's buffer data. GLTF organizes this information through a series of accessors and buffer views, which the loader traverses to reconstruct the geometry.
 
 Vertex positions are stored in a global vertex array, while triangle connectivity is preserved through index triplets. If a mesh includes explicit normals, those are loaded and normalized. Otherwise, the loader generates default upward-facing normals as a fallback. While GLTF files contain additional material information like roughness and metalness maps for physically based rendering, this implementation does not currently utilize these features. Future work could incorporate texture mapping and PBR shading using this stored material data.
 
@@ -89,10 +92,10 @@ After loading all triangles, the implementation constructs a BVH acceleration st
 
 ### Bounding Volume Hierarchy
 
-For scenes with complex meshes containing thousands of triangles, testing every triangle against every ray becomes computationally prohibitive. The BVH (Bounding Volume Hierarchy) acceleration structure addresses this by organizing triangles into a hierarchical tree of axis-aligned bounding boxes. This allows the renderer to quickly cull large portions of geometry that a ray cannot possibly intersect.
+For scenes with complex meshes containing thousands of triangles, testing every triangle against every ray becomes computationally impossible. The BVH (Bounding Volume Hierarchy) acceleration structure addresses this by organizing triangles into a hierarchical tree of axis-aligned bounding boxes. This allows the renderer to quickly cull large portions of geometry that a ray cannot possibly intersect.
 
 **Construction:**
-The BVH is constructed on the CPU during scene loading using a top-down recursive approach. Starting with all triangles, the algorithm splits them into two groups by selecting a split axis and position. The split axis is chosen as the widest dimension of the triangles' centroid bounding box, ensuring splits occur along the direction where triangles are most spread out. Triangles are then partitioned based on whether their centroid falls to the left or right of the split position. Each node stores its bounding box and either points to two child nodes (interior nodes) or contains a list of triangles (leaf nodes). Leaf nodes are created when the triangle count drops below a threshold of 8 triangles.
+The BVH is constructed on the CPU during scene loading using a top-down recursive approach. Starting with all triangles, we can split them into two groups by selecting a split axis and position. The split axis is chosen as the widest dimension of the triangles' centroid bounding box, ensuring splits occur along the direction where triangles are most spread out. Triangles are then partitioned based on whether their centroid falls to the left or right of the split position. Each node stores its bounding box and either points to two child nodes (interior nodes) or contains a list of triangles (leaf nodes). Leaf nodes are created when the triangle count drops below a threshold of 8 triangles.
 
 **Traversal:**
 During rendering, rays traverse the BVH using an explicit stack to avoid GPU recursion limitations. Starting at the root, the algorithm tests if the ray intersects the node's bounding box using the slab method. If the ray misses, the entire subtree is culled. If it hits and the node is a leaf, all triangles in that leaf are tested for intersection. If it's an interior node, both children are pushed onto the stack for further processing. This hierarchical culling dramatically reduces the number of triangle intersection tests from O(n) to O(log n) on average.
