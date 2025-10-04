@@ -87,6 +87,12 @@
         "porcelain": {
             "TYPE": "Diffuse",
             "RGB": [ 0.99, 0.99, 0.99 ]
+        },
+        "mirror": {
+            "TYPE": "Specular",
+            "RGB": [ 1.0, 1.0, 1.0 ],
+            "HAS_REFRACTIVE": 1,
+            "IOR": 1.0
         }
     },  
     "Camera": {
@@ -162,6 +168,13 @@
             "TRANS": [ 0.0, 1.0, 0.0 ],
             "ROTAT": [ 0.0, 0.0, 0.0 ],
             "SCALE": [ 3.0, 1.0, 5.0 ]
+        },
+        {
+            "TYPE": "cube",
+            "MATERIAL": "mirror",
+            "TRANS": [ -6.9, 5.5, 0.0 ],
+            "ROTAT": [ 0.0, 0.0, 0.0 ],
+            "SCALE": [ 0.03, 8.0, 10.0 ]
         },
         {
             "TYPE": "cube",

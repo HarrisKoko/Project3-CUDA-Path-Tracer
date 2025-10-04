@@ -70,15 +70,24 @@ __host__ __device__ void scatterRay(
     }
 
     // Reflective material
-    if (material.hasReflective > 0.0f)
+    // Refractive material
+    if (material.hasRefractive > 0.0f)
     {
-        scatteredDirection = glm::reflect(incomingDirection, surfaceNormal);
-        pathSegment.ray.origin = hitPoint + 1e-4f * surfaceNormal;
-        pathSegment.ray.direction = glm::normalize(scatteredDirection);
-        pathSegment.color *= material.color;
-        pathSegment.remainingBounces--;
-        return;
+        if (abs(material.indexOfRefraction - 1.0f) < 0.001f)
+        {
+            glm::vec3 normal = glm::dot(incomingDirection, surfaceNormal) < 0.0f
+                ? surfaceNormal
+                : -surfaceNormal;
+            scatteredDirection = glm::reflect(incomingDirection, normal);
+            pathSegment.ray.origin = hitPoint + 1e-3f * normal;
+            pathSegment.ray.direction = glm::normalize(scatteredDirection);
+            pathSegment.color *= material.color;
+            pathSegment.remainingBounces--;
+            return;
+        }
     }
+
+        // ... rest of your existing refractive code stays the same
 
     // Refractive material
     if (material.hasRefractive > 0.0f)
