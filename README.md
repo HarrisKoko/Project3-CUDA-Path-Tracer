@@ -135,6 +135,8 @@ The graph above shows little to no change between using material sorting and not
 
 REFERENCES
 ================
+
+**Implementation**
 University of Pennsylvania CIS 560 and CIS 561 Slides by Adam Mally
 
 University of Pennsylvania CIS 565 Path Tracing Slides by Ruipeng Wang
@@ -142,3 +144,8 @@ University of Pennsylvania CIS 565 Path Tracing Slides by Ruipeng Wang
 Physically Based Rendering: From Theory To Implementation (PBRTv4) by Matt Pharr, Wenzel Jakob, and Greg Humphreys
 
 Simulating Depth of Field Blurring by Paul Bourke
+
+**Meshes**
+https://sketchfab.com/3d-models/rubber-duck-8e24a6d4d15c4c62ae053cfa67d99e67#download
+
+https://github.com/KhronosGroup/glTF-Sample-Models
