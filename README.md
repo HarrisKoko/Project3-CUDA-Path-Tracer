@@ -50,16 +50,16 @@ The implementations are influenced by Physically Based Rendering: From Theory to
 
 **Diffuse:**
 The diffuse material samples a random direction in the hemisphere around the surface normal to scatter incoming light. This produces the characteristic rough, evenly colored appearance of matte surfaces, as shown in the results below.
-![spec](img/diffuse.png)
+![diffuse](img/diffuse.png)
 
 **Specular:**
 The specular case reflects light perfectly about the normal, producing mirror-like reflections.
-![spec](img/specular.png)
+![specular](img/specular.png)
 
 **Refraction:**
 Refraction allows light to pass through transparent objects, bending according to the object’s index of refraction. To simulate real glass, the implementation randomly chooses whether a ray is reflected (specular) or transmitted (refractive) based on Fresnel terms. This produces the combined reflective and transmissive behavior of glass. Attenuation within the medium is modeled using the Beer–Lambert Law. It also produces a caustic effect where the light exiting the other side of the sphere coalesces, creating a bright spot on the surface in the path of the outgoing rays. This is shown below.
-![spec](img/glass.png)
-![spec](img/caustics.png)
+![glass](img/glass.png)
+![caustic](img/caustics.png)
 
 ### Intersections
 
@@ -79,8 +79,8 @@ Triangle intersection employs the Möller-Trumbore algorithm, which computes the
 
 ### GLTF Mesh Loading
 
-![spec](img/bunny.png)
-![spec](img/avocado.png)
+![bunny](img/bunny.png)
+![avocado](img/avocado.png)
 
 The path tracer supports loading complex geometry from GLTF files, extending the renderer beyond simple primitives. GLTF (GL Transmission Format) is a standard 3D file format that stores mesh data, materials, and scene hierarchies in a compact structure suitable for GPU rendering.
 
@@ -103,7 +103,7 @@ During rendering, rays traverse the BVH using an explicit stack to avoid GPU rec
 **Performance Impact:**
 The BVH provides substantial performance improvements for mesh rendering. Without acceleration, every ray must test against every triangle in the scene, resulting in millions of unnecessary intersection tests. With the BVH, rays only test triangles in the bounding boxes they actually intersect, reducing wasted computation by orders of magnitude. The graph below demonstrates the performance difference between naive triangle testing and BVH-accelerated rendering.
 
-![spec](img/bvh.png)
+![bvh](img/bvh.png)
 
 The BVH is constructed once on the CPU and uploaded to GPU memory, where it remains static throughout rendering. This makes it well-suited for scenes with static geometry, though dynamic scenes would require rebuilding or refitting the structure each frame.
 
@@ -111,11 +111,13 @@ The BVH is constructed once on the CPU and uploaded to GPU memory, where it rema
 
 Aliasing produces jagged edges when a single ray per pixel either hits or misses geometry at boundaries. Stochastic antialiasing addresses this by casting multiple rays per pixel with random jitter, then averaging the results. Each ray is offset by a small random amount within the pixel's area, sampling different points. This softens sharp transitions into smooth gradients, reducing the staircase effect along edges. The randomness distributes sampling error as noise that diminishes with more samples, rather than creating regular patterns that would introduce new artifacts.
 
+![noSAA](img/noSAA.png) ![SAA](img/SAA.png)
+
 ### Stream Compaction
 
 Stream compaction removes terminated rays from the active pool between bounces. The implementation uses Thrust's partition operation to filter out rays where `remainingBounces <= 0`, keeping only active rays for the next iteration. Rays terminate when they hit emissive materials, miss geometry entirely, or reach the maximum trace depth.
 
-![spec](img/sc.png)
+![stream_compaction](img/sc.png)
 
 However, testing revealed that stream compaction actually decreased performance in practice. The partition operation incurs overhead by traversing the ray array and shuffling memory every bounce. This cost is only justified if enough rays are culled to offset it. In enclosed scenes like the Cornell box where most rays bounce multiple times, few rays terminate early enough to make compaction worthwhile. Additionally, the memory shuffle can disrupt cache coherency by destroying spatial locality. The graph above shows this performance decrease, though in more open scenes with many escaping rays, stream compaction would likely provide greater benefit.
 
@@ -123,7 +125,7 @@ However, testing revealed that stream compaction actually decreased performance 
 
 Similar to stream compaction, we can try and optimize the path tracer by sorting materials. This enables the GPU to shade materials that have the same material type at the same time. Ideally, this reduces overhead on the GPU since it would not need to spawn material shading kernels randomly. However, since this path tracer handles all materials in the same kernel. 
 
-![spec](img/sorting.png)
+![sorting](img/sorting.png)
 
 The graph above shows little to no change between using material sorting and not. If anything, there is a slight performance decrease as it takes time to sort the materials. If there were individual kernels for each material and there were more materials in the scene, this would have a more profound impact.
 
@@ -134,3 +136,5 @@ University of Pennsylvania CIS 560 and CIS 561 Slides by Adam Mally
 University of Pennsylvania CIS 565 Path Tracing Slides by Ruipeng Wang
 
 Physically Based Rendering: From Theory To Implementation (PBRTv4) by Matt Pharr, Wenzel Jakob, and Greg Humphreys
+
+Simulating Depth of Field Blurring by Paul Bourke
